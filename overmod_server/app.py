@@ -1,0 +1,463 @@
+import hashlib
+import hmac
+import ipaddress
+import json
+import sqlite3
+import threading
+import time
+from contextlib import asynccontextmanager
+from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
+
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+
+from .config import (
+    ROOT,
+    admin_token_hash,
+    overrank_api_key,
+    overrank_url,
+    popular_cache_seconds,
+)
+from .database import connect, initialise, row_to_mod, row_to_submission
+from .schemas import (
+    ModResponse,
+    ModWrite,
+    SubmissionResponse,
+    SubmissionWrite,
+)
+
+
+STATIC = ROOT / "static"
+_popular_lock = threading.Lock()
+_popular_cache: dict = {"expires_at": 0.0, "payload": None}
+SUBMISSION_DAILY_LIMIT = 50
+SUBMISSION_WINDOW_SECONDS = 24 * 60 * 60
+
+
+def _invalidate_popular_cache() -> None:
+    with _popular_lock:
+        _popular_cache["expires_at"] = 0.0
+        _popular_cache["payload"] = None
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    initialise()
+    yield
+
+
+app = FastAPI(
+    title="Overmod",
+    version="0.1.0",
+    docs_url=None,
+    redoc_url=None,
+    lifespan=lifespan,
+)
+app.mount("/assets", StaticFiles(directory=str(STATIC)), name="assets")
+
+
+def require_admin(authorization: str = Header(default="")) -> None:
+    expected = admin_token_hash()
+    if not expected:
+        raise HTTPException(status_code=503, detail="Administrator access is not configured")
+    prefix = "Bearer "
+    token = authorization[len(prefix):].strip() if authorization.startswith(prefix) else ""
+    supplied = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    if not token or not hmac.compare_digest(expected, supplied):
+        raise HTTPException(status_code=401, detail="Invalid administrator token")
+
+
+def _cache_headers(response: Response, seconds: int = 30) -> None:
+    response.headers["Cache-Control"] = f"public, max-age={seconds}"
+
+
+def _client_ip(request: Request) -> str:
+    direct = request.client.host if request.client else "unknown"
+    if direct in ("127.0.0.1", "::1"):
+        forwarded = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
+        if forwarded:
+            try:
+                return str(ipaddress.ip_address(forwarded))
+            except ValueError:
+                pass
+    try:
+        return str(ipaddress.ip_address(direct))
+    except ValueError:
+        return direct or "unknown"
+
+
+def _client_ip_hash(request: Request) -> str:
+    secret = admin_token_hash().encode("ascii") or b"overmod-local-rate-limit"
+    return hmac.new(secret, _client_ip(request).encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+@app.get("/", include_in_schema=False)
+def index() -> FileResponse:
+    return FileResponse(STATIC / "index.html")
+
+
+@app.get("/admin", include_in_schema=False)
+def admin_page() -> FileResponse:
+    return FileResponse(STATIC / "admin.html")
+
+
+@app.get("/health")
+def health() -> dict:
+    return {"status": "ok", "version": app.version}
+
+
+@app.get("/api/v1/mods", response_model=list[ModResponse])
+def public_mods(response: Response) -> list[dict]:
+    with connect() as connection:
+        rows = connection.execute(
+            "SELECT * FROM mods WHERE enabled = 1 ORDER BY updated_at DESC, id DESC"
+        ).fetchall()
+    _cache_headers(response)
+    return [row_to_mod(row) for row in rows]
+
+
+@app.post("/api/v1/submissions", response_model=SubmissionResponse)
+def create_submission(payload: SubmissionWrite, request: Request) -> dict:
+    values = payload.model_dump()
+    now = int(time.time())
+    source_hash = _client_ip_hash(request)
+    with connect() as connection:
+        recent_count = int(
+            connection.execute(
+                """
+                SELECT COUNT(*) FROM submissions
+                WHERE submitter_ip_hash = ? AND submitted_at >= ?
+                """,
+                (source_hash, now - SUBMISSION_WINDOW_SECONDS),
+            ).fetchone()[0]
+        )
+        if recent_count >= SUBMISSION_DAILY_LIMIT:
+            raise HTTPException(
+                status_code=429,
+                detail="同一网络地址 24 小时内最多提交 50 次，请稍后再试",
+            )
+
+        if values["level_key"]:
+            published = connection.execute(
+                "SELECT 1 FROM mods WHERE level_key = ? LIMIT 1",
+                (values["level_key"],),
+            ).fetchone()
+            pending = connection.execute(
+                """
+                SELECT 1 FROM submissions
+                WHERE status = 'pending' AND level_key = ? LIMIT 1
+                """,
+                (values["level_key"],),
+            ).fetchone()
+            if published or pending:
+                raise HTTPException(status_code=409, detail="这张地图已经收录或正在等待审核")
+        cursor = connection.execute(
+            """
+            INSERT INTO submissions (
+                name, author, version, level_key, level_set_uid,
+                scene_name, mod_type, description, download_label,
+                download_url, download_instructions, status,
+                submitter_ip_hash, submitted_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+            """,
+            (
+                values["name"],
+                values["author"],
+                values["version"],
+                values["level_key"],
+                values["level_set_uid"],
+                values["scene_name"],
+                values["mod_type"],
+                values["description"],
+                values["download_label"],
+                values["download_url"],
+                values["download_instructions"],
+                source_hash,
+                now,
+            ),
+        )
+        row = connection.execute(
+            "SELECT * FROM submissions WHERE id = ?", (cursor.lastrowid,)
+        ).fetchone()
+    return row_to_submission(row)
+
+
+@app.post("/api/v1/admin/session", dependencies=[Depends(require_admin)])
+def admin_session() -> dict:
+    return {"authenticated": True}
+
+
+@app.get(
+    "/api/v1/admin/mods",
+    response_model=list[ModResponse],
+    dependencies=[Depends(require_admin)],
+)
+def admin_mods() -> list[dict]:
+    with connect() as connection:
+        rows = connection.execute(
+            "SELECT * FROM mods ORDER BY updated_at DESC, id DESC"
+        ).fetchall()
+    return [row_to_mod(row) for row in rows]
+
+
+@app.get(
+    "/api/v1/admin/submissions",
+    response_model=list[SubmissionResponse],
+    dependencies=[Depends(require_admin)],
+)
+def admin_submissions() -> list[dict]:
+    with connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT * FROM submissions
+            WHERE status = 'pending'
+            ORDER BY submitted_at ASC, id ASC
+            """
+        ).fetchall()
+    return [row_to_submission(row) for row in rows]
+
+
+@app.post(
+    "/api/v1/admin/submissions/{submission_id}/approve",
+    response_model=ModResponse,
+    dependencies=[Depends(require_admin)],
+)
+def approve_submission(submission_id: int, payload: ModWrite) -> dict:
+    values = payload.model_dump()
+    now = int(time.time())
+    try:
+        with connect() as connection:
+            submission = connection.execute(
+                "SELECT * FROM submissions WHERE id = ? AND status = 'pending'",
+                (submission_id,),
+            ).fetchone()
+            if submission is None:
+                raise HTTPException(status_code=404, detail="Pending submission not found")
+            cursor = connection.execute(
+                """
+                INSERT INTO mods (
+                    name, author, version, level_key, level_set_uid,
+                    scene_name, mod_type, description, download_label,
+                    download_url, download_instructions, enabled
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    values["name"], values["author"], values["version"],
+                    values["level_key"], values["level_set_uid"],
+                    values["scene_name"], values["mod_type"],
+                    values["description"], values["download_label"],
+                    values["download_url"], values["download_instructions"],
+                    1 if values["enabled"] else 0,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE submissions
+                SET status = 'approved', reviewed_at = ?, approved_mod_id = ?
+                WHERE id = ?
+                """,
+                (now, cursor.lastrowid, submission_id),
+            )
+            row = connection.execute(
+                "SELECT * FROM mods WHERE id = ?", (cursor.lastrowid,)
+            ).fetchone()
+    except sqlite3.IntegrityError as error:
+        raise HTTPException(status_code=409, detail="This level key is already linked") from error
+    _invalidate_popular_cache()
+    return row_to_mod(row)
+
+
+@app.post(
+    "/api/v1/admin/submissions/{submission_id}/reject",
+    response_model=SubmissionResponse,
+    dependencies=[Depends(require_admin)],
+)
+def reject_submission(submission_id: int) -> dict:
+    now = int(time.time())
+    with connect() as connection:
+        cursor = connection.execute(
+            """
+            UPDATE submissions SET status = 'rejected', reviewed_at = ?
+            WHERE id = ? AND status = 'pending'
+            """,
+            (now, submission_id),
+        )
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Pending submission not found")
+        row = connection.execute(
+            "SELECT * FROM submissions WHERE id = ?", (submission_id,)
+        ).fetchone()
+    return row_to_submission(row)
+
+
+@app.post(
+    "/api/v1/admin/mods",
+    response_model=ModResponse,
+    dependencies=[Depends(require_admin)],
+)
+def create_mod(payload: ModWrite) -> dict:
+    values = payload.model_dump()
+    try:
+        with connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO mods (
+                    name, author, version, level_key, level_set_uid,
+                    scene_name, mod_type,
+                    description, download_label, download_url,
+                    download_instructions, enabled
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    values["name"],
+                    values["author"],
+                    values["version"],
+                    values["level_key"],
+                    values["level_set_uid"],
+                    values["scene_name"],
+                    values["mod_type"],
+                    values["description"],
+                    values["download_label"],
+                    values["download_url"],
+                    values["download_instructions"],
+                    1 if values["enabled"] else 0,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM mods WHERE id = ?", (cursor.lastrowid,)
+            ).fetchone()
+    except sqlite3.IntegrityError as error:
+        raise HTTPException(status_code=409, detail="This level key is already linked") from error
+    _invalidate_popular_cache()
+    return row_to_mod(row)
+
+
+@app.put(
+    "/api/v1/admin/mods/{mod_id}",
+    response_model=ModResponse,
+    dependencies=[Depends(require_admin)],
+)
+def update_mod(mod_id: int, payload: ModWrite) -> dict:
+    values = payload.model_dump()
+    try:
+        with connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE mods SET
+                    name = ?, author = ?, version = ?, level_key = ?,
+                    level_set_uid = ?, scene_name = ?, mod_type = ?,
+                    description = ?, download_label = ?,
+                    download_url = ?, download_instructions = ?, enabled = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (
+                    values["name"],
+                    values["author"],
+                    values["version"],
+                    values["level_key"],
+                    values["level_set_uid"],
+                    values["scene_name"],
+                    values["mod_type"],
+                    values["description"],
+                    values["download_label"],
+                    values["download_url"],
+                    values["download_instructions"],
+                    1 if values["enabled"] else 0,
+                    mod_id,
+                ),
+            )
+            if cursor.rowcount == 0:
+                raise HTTPException(status_code=404, detail="Mod not found")
+            row = connection.execute("SELECT * FROM mods WHERE id = ?", (mod_id,)).fetchone()
+    except sqlite3.IntegrityError as error:
+        raise HTTPException(status_code=409, detail="This level key is already linked") from error
+    _invalidate_popular_cache()
+    return row_to_mod(row)
+
+
+@app.delete(
+    "/api/v1/admin/mods/{mod_id}",
+    dependencies=[Depends(require_admin)],
+)
+def delete_mod(mod_id: int) -> dict:
+    with connect() as connection:
+        cursor = connection.execute("DELETE FROM mods WHERE id = ?", (mod_id,))
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Mod not found")
+    _invalidate_popular_cache()
+    return {"deleted": True, "id": mod_id}
+
+
+def _load_popular_custom_levels() -> dict:
+    query = urlencode(
+        {
+            "days": 7,
+            "limit": 50,
+            "kind": "custom",
+            "client_id": "overmod-web",
+        }
+    )
+    request = Request(
+        overrank_url() + "/api/v1/statistics/popular-levels?" + query,
+        headers={"User-Agent": "Overmod/0.1.0"},
+    )
+    key = overrank_api_key()
+    if key:
+        request.add_header("X-Overrank-Key", key)
+    with urlopen(request, timeout=4.0) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    entries = [
+        entry
+        for entry in payload.get("entries", [])
+        if not str(entry.get("level_key", "")).startswith("official-")
+    ]
+    entries.sort(
+        key=lambda entry: (
+            -int(entry.get("player_count", entry.get("play_count", 0))),
+            str(entry.get("level_key", "")),
+        )
+    )
+    with connect() as connection:
+        catalogued = {
+            str(row["level_key"]): row_to_mod(row)
+            for row in connection.execute(
+                "SELECT * FROM mods WHERE enabled = 1 AND level_key <> ''"
+            ).fetchall()
+        }
+    for index, entry in enumerate(entries[:20], start=1):
+        entry["rank"] = index
+        metadata = catalogued.get(str(entry.get("level_key", "")))
+        if metadata:
+            entry["catalogue"] = metadata
+    return {"days": 7, "entries": entries[:20]}
+
+
+@app.get("/api/v1/popular-levels")
+def popular_levels(response: Response) -> dict:
+    now = time.time()
+    with _popular_lock:
+        cached = _popular_cache.get("payload")
+        if cached is not None and float(_popular_cache["expires_at"]) > now:
+            _cache_headers(response, popular_cache_seconds())
+            return cached
+        try:
+            payload = _load_popular_custom_levels()
+        except (HTTPError, URLError, TimeoutError, ValueError, json.JSONDecodeError) as error:
+            if cached is not None:
+                stale = dict(cached)
+                stale["stale"] = True
+                stale["error"] = "Overrank is temporarily unavailable"
+                return stale
+            raise HTTPException(
+                status_code=503,
+                detail="Overrank popularity data is temporarily unavailable",
+            ) from error
+        _popular_cache["payload"] = payload
+        _popular_cache["expires_at"] = now + popular_cache_seconds()
+        _cache_headers(response, popular_cache_seconds())
+        return payload

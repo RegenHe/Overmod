@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Overmod — Overcooked! 2 热门关卡与模组目录">
+  <title>Overmod</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="/" aria-label="Overmod 首页">
+        <strong>Overmod</strong>
+        <small>Overcooked! 2 模组收集</small>
+      </a>
+      <nav class="main-nav" aria-label="内容分类">
+        <button class="nav-item is-active" data-view="popular">热门关卡</button>
+        <button class="nav-item" data-view="mods">模组目录</button>
+        <button class="nav-item" data-view="submit">提交模组</button>
+      </nav>
+    </div>
+  </header>
+
+  <main class="content">
+    <div id="submission-disclaimer" class="submission-disclaimer">免责声明：Overcooked! 2 的游戏素材版权归 Team17 所有，LevelEditor 的源代码归 GUA 所有。任何人不得在任何情况下将上述素材或源代码用于任何商业用途。本站仅提供信息索引，不对第三方链接及其内容作安全性保证；访问或下载安装前请自行核实来源，切勿泄露账号、验证码或其他隐私信息。</div>
+    <section id="view-popular" class="view is-visible" aria-labelledby="popular-title">
+      <div class="page-heading">
+        <div>
+          <h1 id="popular-title">近 7 天热门关卡</h1>
+          <p>按 Overrank 记录的完成次数排序</p>
+        </div>
+        <button id="popular-refresh" class="subtle-button" type="button">刷新</button>
+      </div>
+      <div id="popular-status" class="status-line">正在读取热门数据……</div>
+      <div class="table-wrap">
+        <table class="level-table">
+          <thead>
+            <tr>
+              <th class="rank-column">#</th>
+              <th class="key-column">标识</th>
+              <th>关卡名称</th>
+              <th class="author-column">作者 / 合集</th>
+              <th class="version-column">版本</th>
+              <th class="count-column">7 天游玩局数</th>
+            </tr>
+          </thead>
+          <tbody id="popular-list" aria-live="polite"></tbody>
+        </table>
+      </div>
+      <p class="data-note">热度仅代表安装 Overrank 的玩家记录，不代表下载量或全体玩家数据。</p>
+    </section>
+
+    <section id="view-mods" class="view" aria-labelledby="mods-title">
+      <div class="page-heading">
+        <div>
+          <h1 id="mods-title">模组目录</h1>
+          <p>地图和工具统一收录，Overmod 不托管下载内容</p>
+        </div>
+        <div class="catalogue-tools">
+          <label class="search-box">
+            <span class="sr-only">搜索模组</span>
+            <input id="mod-search" type="search" placeholder="搜索名称或作者">
+          </label>
+        </div>
+      </div>
+      <div id="mod-status" class="status-line">正在加载……</div>
+      <div class="table-wrap">
+        <table class="level-table mod-table">
+          <thead>
+            <tr>
+              <th class="key-column"><button class="sort-button" type="button" data-sort="key">标识</button></th>
+              <th><button class="sort-button" type="button" data-sort="name">模组名称</button></th>
+              <th class="type-column"><button class="sort-button" type="button" data-sort="type">类型</button></th>
+              <th class="author-column"><button class="sort-button" type="button" data-sort="author">作者</button></th>
+              <th class="version-column"><button class="sort-button" type="button" data-sort="version">版本</button></th>
+              <th class="time-column" aria-sort="descending"><button class="sort-button is-active" type="button" data-sort="updated" data-direction="desc">更新时间</button></th>
+            </tr>
+          </thead>
+          <tbody id="mod-list" aria-live="polite"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="view-submit" class="view" aria-labelledby="submit-title">
+      <div class="page-heading">
+        <div>
+          <h1 id="submit-title">提交模组</h1>
+          <p>为防止广告等垃圾或有害内容，提交后需要管理员审核，不会立即出现在公开目录中</p>
+        </div>
+      </div>
+      <form id="submission-form" class="submission-form">
+        <div class="form-grid">
+          <label><span>模组名称 *</span><input id="submit-name" maxlength="96" placeholder="地图建议填写：合集名称 / 关卡名称" required>
+            <small>地图建议使用“合集名称 / 关卡名称”，工具直接填写模组名称。</small>
+          </label>
+          <label><span>作者</span><input id="submit-author" maxlength="64"></label>
+          <label><span>版本号</span><input id="submit-version" maxlength="32" placeholder="例如 1.0.0"></label>
+          <label><span>模组类型</span><select id="submit-mod-type"><option value="tool">工具</option><option value="map">地图</option></select></label>
+          <label class="submit-map-identity"><span>关卡合集 UID</span><input id="submit-level-set-uid" maxlength="160" placeholder="OC2DIY 合集 uid"></label>
+          <label class="submit-map-identity"><span>sceneName</span><input id="submit-scene-name" maxlength="160" placeholder="关卡内部 sceneName"></label>
+          <label class="wide submit-map-identity"><span>已有完整关卡键</span><input id="submit-level-key" maxlength="96" placeholder="oc2diy-...">
+            <small>填写 UID 和 sceneName 时此处可以留空，由服务器生成；不要填写 6 位标识。</small>
+          </label>
+          <label class="wide"><span>简单介绍 *</span><textarea id="submit-description" maxlength="1600" rows="5" required></textarea></label>
+          <label><span>下载按钮文字</span><input id="submit-download-label" maxlength="48" value="项目页面"></label>
+          <label><span>下载或项目地址 *</span><input id="submit-download-url" type="url" maxlength="500" placeholder="http:// 或 https://" required></label>
+          <label class="wide"><span>下载方式或安装提示</span><textarea id="submit-download-instructions" maxlength="800" rows="3"></textarea></label>
+        </div>
+        <div class="submission-note">这里只提交文字和外部地址，不会上传文件。同一网络地址 24 小时最多提交 50 次。</div>
+        <div class="form-actions">
+          <button id="submission-submit" class="primary-button" type="submit">提交审核</button>
+          <span id="submission-status" class="form-status" aria-live="polite"></span>
+        </div>
+      </form>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div><strong>OVERMOD</strong><span>第三方社区目录</span></div>
+    <p>访问外部下载页面前，请自行确认来源与游戏版本兼容性。</p>
+  </footer>
+  <script src="/assets/app.js" defer></script>
+</body>
+</html>
