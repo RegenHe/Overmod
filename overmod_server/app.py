@@ -9,9 +9,9 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.request import Request as UrlRequest, urlopen
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -120,6 +120,93 @@ def public_mods(response: Response) -> list[dict]:
     return [row_to_mod(row) for row in rows]
 
 
+@app.get("/api/v1/featured-mods", response_model=list[ModResponse])
+def featured_mods(response: Response) -> list[dict]:
+    with connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT * FROM mods
+            WHERE enabled = 1 AND featured = 1
+            ORDER BY updated_at DESC, id ASC
+            LIMIT 8
+            """
+        ).fetchall()
+    _cache_headers(response)
+    return [row_to_mod(row) for row in rows]
+
+
+@app.get("/api/v1/catalogue")
+def public_catalogue(
+    response: Response,
+    page: int = Query(default=1, ge=1),
+    query: str = Query(default="", max_length=100),
+    sort: str = Query(
+        default="updated",
+        pattern="^(key|name|type|author|version|updated)$",
+    ),
+    direction: str = Query(default="desc", pattern="^(asc|desc)$"),
+) -> dict:
+    page_size = 40
+    where = "enabled = 1"
+    parameters: list[object] = []
+    cleaned_query = query.strip().lower()
+    if cleaned_query:
+        escaped_query = (
+            cleaned_query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        )
+        where += """
+            AND LOWER(
+                name || ' ' || author || ' ' || description || ' ' ||
+                CASE mod_type WHEN 'map' THEN '地图' ELSE '工具' END
+            ) LIKE ? ESCAPE '\\'
+        """
+        parameters.append("%" + escaped_query + "%")
+
+    order_columns = {
+        "key": "CASE WHEN mod_type = 'map' AND level_key <> '' THEN SUBSTR(level_key, -6) ELSE printf('M%05d', id) END",
+        "name": "name COLLATE NOCASE",
+        "type": "mod_type COLLATE NOCASE",
+        "author": "author COLLATE NOCASE",
+        "version": "version COLLATE NOCASE",
+        "updated": "updated_at",
+    }
+    order_direction = "ASC" if direction == "asc" else "DESC"
+    with connect() as connection:
+        counts = connection.execute(
+            f"""
+            SELECT
+                COUNT(*) AS total,
+                SUM(CASE WHEN mod_type = 'map' THEN 1 ELSE 0 END) AS maps
+            FROM mods
+            WHERE {where}
+            """,
+            parameters,
+        ).fetchone()
+        total = int(counts["total"] or 0)
+        maps = int(counts["maps"] or 0)
+        page_count = max(1, (total + page_size - 1) // page_size)
+        selected_page = min(page, page_count)
+        rows = connection.execute(
+            f"""
+            SELECT * FROM mods
+            WHERE {where}
+            ORDER BY {order_columns[sort]} {order_direction}, name COLLATE NOCASE ASC, id ASC
+            LIMIT ? OFFSET ?
+            """,
+            [*parameters, page_size, (selected_page - 1) * page_size],
+        ).fetchall()
+    _cache_headers(response)
+    return {
+        "entries": [row_to_mod(row) for row in rows],
+        "total": total,
+        "maps": maps,
+        "tools": total - maps,
+        "page": selected_page,
+        "page_size": page_size,
+        "page_count": page_count,
+    }
+
+
 @app.post("/api/v1/submissions", response_model=SubmissionResponse)
 def create_submission(payload: SubmissionWrite, request: Request) -> dict:
     values = payload.model_dump()
@@ -146,12 +233,12 @@ def create_submission(payload: SubmissionWrite, request: Request) -> dict:
             target = connection.execute(
                 """
                 SELECT * FROM mods
-                WHERE id = ? AND enabled = 1 AND mod_type = 'map'
+                WHERE id = ? AND enabled = 1
                 """,
                 (target_mod_id,),
             ).fetchone()
             if target is None:
-                raise HTTPException(status_code=404, detail="要修改的地图不存在或已隐藏")
+                raise HTTPException(status_code=404, detail="要修改的模组不存在或已隐藏")
             pending_update = connection.execute(
                 """
                 SELECT 1 FROM submissions
@@ -160,8 +247,8 @@ def create_submission(payload: SubmissionWrite, request: Request) -> dict:
                 (target_mod_id,),
             ).fetchone()
             if pending_update:
-                raise HTTPException(status_code=409, detail="这张地图已有修改申请正在等待审核")
-            values["mod_type"] = "map"
+                raise HTTPException(status_code=409, detail="这个模组已有修改申请正在等待审核")
+            values["mod_type"] = target["mod_type"]
             values["level_key"] = target["level_key"]
             values["level_set_uid"] = target["level_set_uid"]
             values["scene_name"] = target["scene_name"]
@@ -269,8 +356,8 @@ def approve_submission(submission_id: int, payload: ModWrite) -> dict:
                     INSERT INTO mods (
                         name, author, version, level_key, level_set_uid,
                         scene_name, mod_type, description, download_label,
-                        download_url, download_instructions, enabled
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        download_url, download_instructions, enabled, featured
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         values["name"], values["author"], values["version"],
@@ -279,6 +366,7 @@ def approve_submission(submission_id: int, payload: ModWrite) -> dict:
                         values["description"], values["download_label"],
                         values["download_url"], values["download_instructions"],
                         1 if values["enabled"] else 0,
+                        1 if values["featured"] else 0,
                     ),
                 )
                 approved_mod_id = cursor.lastrowid
@@ -289,7 +377,7 @@ def approve_submission(submission_id: int, payload: ModWrite) -> dict:
                         name = ?, author = ?, version = ?, level_key = ?,
                         level_set_uid = ?, scene_name = ?, mod_type = ?,
                         description = ?, download_label = ?, download_url = ?,
-                        download_instructions = ?, enabled = ?,
+                        download_instructions = ?, enabled = ?, featured = ?,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE id = ?
                     """,
@@ -300,6 +388,7 @@ def approve_submission(submission_id: int, payload: ModWrite) -> dict:
                         values["description"], values["download_label"],
                         values["download_url"], values["download_instructions"],
                         1 if values["enabled"] else 0,
+                        1 if values["featured"] else 0,
                         int(target_mod_id),
                     ),
                 )
@@ -361,8 +450,8 @@ def create_mod(payload: ModWrite) -> dict:
                     name, author, version, level_key, level_set_uid,
                     scene_name, mod_type,
                     description, download_label, download_url,
-                    download_instructions, enabled
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    download_instructions, enabled, featured
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     values["name"],
@@ -377,6 +466,7 @@ def create_mod(payload: ModWrite) -> dict:
                     values["download_url"],
                     values["download_instructions"],
                     1 if values["enabled"] else 0,
+                    1 if values["featured"] else 0,
                 ),
             )
             row = connection.execute(
@@ -403,7 +493,7 @@ def update_mod(mod_id: int, payload: ModWrite) -> dict:
                     name = ?, author = ?, version = ?, level_key = ?,
                     level_set_uid = ?, scene_name = ?, mod_type = ?,
                     description = ?, download_label = ?,
-                    download_url = ?, download_instructions = ?, enabled = ?,
+                    download_url = ?, download_instructions = ?, enabled = ?, featured = ?,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
@@ -420,6 +510,7 @@ def update_mod(mod_id: int, payload: ModWrite) -> dict:
                     values["download_url"],
                     values["download_instructions"],
                     1 if values["enabled"] else 0,
+                    1 if values["featured"] else 0,
                     mod_id,
                 ),
             )
@@ -454,7 +545,7 @@ def _load_popular_custom_levels() -> dict:
             "client_id": "overmod-web",
         }
     )
-    request = Request(
+    request = UrlRequest(
         overrank_url() + "/api/v1/statistics/popular-levels?" + query,
         headers={"User-Agent": "Overmod/0.1.0"},
     )

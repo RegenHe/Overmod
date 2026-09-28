@@ -24,6 +24,12 @@ def connect() -> Iterator[sqlite3.Connection]:
 
 def initialise() -> None:
     with connect() as connection:
+        mods_table_existed = connection.execute(
+            """
+            SELECT 1 FROM sqlite_master
+            WHERE type = 'table' AND name = 'mods'
+            """
+        ).fetchone() is not None
         connection.executescript(
             """
             CREATE TABLE IF NOT EXISTS mods (
@@ -40,6 +46,7 @@ def initialise() -> None:
                 download_url TEXT NOT NULL,
                 download_instructions TEXT NOT NULL DEFAULT '',
                 enabled INTEGER NOT NULL DEFAULT 1,
+                featured INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
@@ -99,6 +106,11 @@ def initialise() -> None:
             connection.execute(
                 "ALTER TABLE mods ADD COLUMN mod_type TEXT NOT NULL DEFAULT 'tool'"
             )
+        featured_was_added = "featured" not in columns
+        if featured_was_added:
+            connection.execute(
+                "ALTER TABLE mods ADD COLUMN featured INTEGER NOT NULL DEFAULT 0"
+            )
         submission_columns = {
             str(row["name"])
             for row in connection.execute("PRAGMA table_info(submissions)").fetchall()
@@ -120,6 +132,49 @@ def initialise() -> None:
                 WHERE status = 'pending' AND target_mod_id IS NOT NULL
             """
         )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_mods_featured
+                ON mods(featured DESC, enabled, updated_at DESC)
+            """
+        )
+        if not mods_table_existed or featured_was_added:
+            connection.execute(
+                """
+                UPDATE mods SET name = 'Overwashed'
+                WHERE LOWER(name) = 'overwashed2'
+                """
+            )
+            connection.execute(
+                """
+                UPDATE mods SET
+                    author = '', version = '', description = '',
+                    download_label = '项目页面', download_url = '',
+                    download_instructions = ''
+                WHERE LOWER(name) IN ('overrank', 'overwashed')
+                """
+            )
+            connection.execute(
+                """
+                UPDATE mods SET featured = 1
+                WHERE LOWER(name) IN ('overrank', 'overwashed')
+                """
+            )
+            for recommended_name in ("Overrank", "Overwashed"):
+                connection.execute(
+                    """
+                    INSERT INTO mods (
+                        name, author, version, level_key, level_set_uid,
+                        scene_name, mod_type, description, download_label,
+                        download_url, download_instructions, enabled, featured
+                    )
+                    SELECT ?, '', '', '', '', '', 'tool', '', '项目页面', '', '', 1, 1
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM mods WHERE LOWER(name) = LOWER(?)
+                    )
+                    """,
+                    (recommended_name, recommended_name),
+                )
 
 
 def row_to_mod(row: sqlite3.Row) -> dict:
@@ -137,6 +192,7 @@ def row_to_mod(row: sqlite3.Row) -> dict:
         "download_url": row["download_url"],
         "download_instructions": row["download_instructions"],
         "enabled": bool(row["enabled"]),
+        "featured": bool(row["featured"]),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }

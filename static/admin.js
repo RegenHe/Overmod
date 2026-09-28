@@ -55,6 +55,7 @@ function resetEditor() {
   $("submission-id").value = "";
   $("field-download-label").value = "项目页面";
   $("field-enabled").checked = true;
+  $("field-featured").checked = false;
   $("editor-heading").textContent = "添加模组";
   $("edit-cancel").hidden = true;
   updateIdentityFields();
@@ -74,6 +75,7 @@ function fillEditor(item) {
   $("field-download-label").value = item.download_label;
   $("field-download-url").value = item.download_url;
   $("field-download-instructions").value = item.download_instructions;
+  $("field-featured").checked = Boolean(item.featured);
 }
 
 function edit(mod) {
@@ -88,6 +90,8 @@ function edit(mod) {
 
 function review(submission) {
   fillEditor(submission);
+  const target = state.mods.find((mod) => mod.id === submission.target_mod_id);
+  $("field-featured").checked = Boolean(target && target.featured);
   $("mod-id").value = "";
   $("submission-id").value = submission.id;
   $("field-enabled").checked = true;
@@ -108,7 +112,7 @@ function renderMods() {
     const title = document.createElement("h3");
     title.textContent = mod.name;
     const meta = document.createElement("p");
-    meta.textContent = `${mod.mod_type === "map" ? "地图" : "工具"} · ${mod.author || "未填写作者"} · ${mod.version || "未填写版本"} · ${mod.enabled ? "公开显示" : "已隐藏"}${mod.level_key ? ` · ${mod.level_key}` : ""}`;
+    meta.textContent = `${mod.mod_type === "map" ? "地图" : "工具"} · ${mod.author || "未填写作者"} · ${mod.version || "未填写版本"} · ${mod.enabled ? "公开显示" : "已隐藏"}${mod.featured ? " · 推荐" : ""}${mod.level_key ? ` · ${mod.level_key}` : ""}`;
     details.append(title, meta);
     const actions = document.createElement("div");
     actions.className = "admin-actions";
@@ -213,6 +217,7 @@ function payload() {
     download_url: $("field-download-url").value,
     download_instructions: $("field-download-instructions").value,
     enabled: $("field-enabled").checked,
+    featured: $("field-featured").checked,
   };
 }
 

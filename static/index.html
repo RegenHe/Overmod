@@ -24,6 +24,10 @@
 
   <main class="content">
     <div id="submission-disclaimer" class="submission-disclaimer">免责声明：Overcooked! 2 的游戏素材版权归 Team17 所有，LevelEditor 的源代码归 GUA 所有。任何人不得在任何情况下将上述素材或源代码用于任何商业用途。本站仅提供信息索引，不对第三方链接及其内容作安全性保证；访问或下载安装前请自行核实来源，切勿泄露账号、验证码或其他隐私信息。</div>
+    <section id="featured-section" class="featured-strip" aria-labelledby="featured-title" hidden>
+      <span id="featured-title" class="featured-title">推荐模组</span>
+      <div id="featured-list" class="featured-list"></div>
+    </section>
     <section id="view-popular" class="view is-visible" aria-labelledby="popular-title">
       <div class="page-heading">
         <div>
@@ -80,6 +84,7 @@
           <tbody id="mod-list" aria-live="polite"></tbody>
         </table>
       </div>
+      <nav id="mod-pagination" class="pagination" aria-label="模组目录分页" hidden></nav>
     </section>
 
     <section id="view-submit" class="view" aria-labelledby="submit-title">

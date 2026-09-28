@@ -8,6 +8,7 @@ from overmod_server.schemas import plain_text
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_OVERRANK_DATABASE = ROOT.parent / "Overrank" / "server" / "data" / "overrank.sqlite3"
+IMPORTED_DESCRIPTION = "该地图由 Overrank 游玩记录导入，详细介绍与下载地址待补充。"
 
 
 def latest_custom_levels(database: Path) -> list[sqlite3.Row]:
@@ -29,7 +30,9 @@ def latest_custom_levels(database: Path) -> list[sqlite3.Row]:
                         ORDER BY last_played DESC, player_id ASC
                     ) AS metadata_row
                 FROM player_levels
-                WHERE level_key NOT LIKE 'official-%'
+                WHERE level_key LIKE 'oc2diy-%'
+                    AND LOWER(COALESCE(level_name, '')) NOT LIKE 's_oc1_story_%'
+                    AND COALESCE(level_label, '') NOT LIKE '%主线%'
             )
             SELECT level_key, level_name, level_label
             FROM latest
@@ -37,6 +40,27 @@ def latest_custom_levels(database: Path) -> list[sqlite3.Row]:
             ORDER BY last_played DESC, level_key ASC
             """
         ).fetchall()
+    finally:
+        source.close()
+
+
+def excluded_mainline_keys(database: Path) -> list[str]:
+    source = sqlite3.connect(str(database))
+    try:
+        return [
+            str(row[0])
+            for row in source.execute(
+                """
+                SELECT DISTINCT level_key
+                FROM player_levels
+                WHERE level_key LIKE 'oc2diy-%'
+                    AND (
+                        LOWER(COALESCE(level_name, '')) LIKE 's_oc1_story_%'
+                        OR COALESCE(level_label, '') LIKE '%主线%'
+                    )
+                """
+            ).fetchall()
+        ]
     finally:
         source.close()
 
@@ -53,12 +77,29 @@ def inferred_author(name: str) -> str:
     return name.split("/", 1)[0].strip()[:64]
 
 
-def import_levels(overrank_database: Path) -> tuple[int, int]:
+def import_levels(overrank_database: Path) -> tuple[int, int, int]:
     levels = latest_custom_levels(overrank_database)
+    excluded_keys = excluded_mainline_keys(overrank_database)
     initialise()
     inserted = 0
     skipped = 0
+    removed = 0
     with connect() as destination:
+        if excluded_keys:
+            placeholders = ",".join("?" for _ in excluded_keys)
+            cursor = destination.execute(
+                f"""
+                DELETE FROM mods
+                WHERE level_key IN ({placeholders})
+                    AND mod_type = 'map'
+                    AND description = ?
+                    AND download_url = ''
+                    AND level_set_uid = ''
+                    AND scene_name = ''
+                """,
+                [*excluded_keys, IMPORTED_DESCRIPTION],
+            )
+            removed = max(0, cursor.rowcount)
         for level in levels:
             level_key = str(level["level_key"] or "").strip()
             if not level_key:
@@ -77,14 +118,14 @@ def import_levels(overrank_database: Path) -> tuple[int, int]:
                     name,
                     inferred_author(name),
                     level_key,
-                    "该地图由 Overrank 游玩记录导入，详细介绍与下载地址待补充。",
+                    IMPORTED_DESCRIPTION,
                 ),
             )
             if cursor.rowcount:
                 inserted += 1
             else:
                 skipped += 1
-    return inserted, skipped
+    return inserted, skipped, removed
 
 
 def main() -> None:
@@ -99,8 +140,11 @@ def main() -> None:
         help="Path to overrank.sqlite3",
     )
     arguments = parser.parse_args()
-    inserted, skipped = import_levels(arguments.database.resolve())
-    print(f"Imported {inserted} custom level(s); skipped {skipped} existing or invalid level(s).")
+    inserted, skipped, removed = import_levels(arguments.database.resolve())
+    print(
+        f"Imported {inserted} custom level(s); skipped {skipped} existing or invalid "
+        f"level(s); removed {removed} automatically imported mainline level(s)."
+    )
 
 
 if __name__ == "__main__":

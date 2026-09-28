@@ -4,8 +4,15 @@ const state = {
   mods: [],
   popularLoaded: false,
   modSort: { key: "updated", direction: "desc" },
+  modPage: 1,
+  modPageCount: 1,
+  modTotal: 0,
+  modMaps: 0,
+  modTools: 0,
+  modRequestId: 0,
   modificationTarget: null,
 };
+const MODS_PER_PAGE = 40;
 const $ = (id) => document.getElementById(id);
 
 async function api(path, options = {}) {
@@ -36,6 +43,36 @@ function showView(name) {
   document.querySelector(`.nav-item[data-view="${name}"]`).classList.add("is-active");
   history.replaceState(null, "", name === "popular" ? "/" : `/#${name}`);
   if (name === "popular" && !state.popularLoaded) loadPopular();
+}
+
+function openFeaturedMod(mod) {
+  $("mod-search").value = mod.name;
+  state.modPage = 1;
+  showView("mods");
+  loadMods();
+}
+
+async function loadFeaturedMods() {
+  try {
+    const mods = await api("/api/v1/featured-mods");
+    const list = $("featured-list");
+    list.replaceChildren();
+    mods.forEach((mod) => {
+      const item = document.createElement("button");
+      item.className = "featured-item";
+      item.type = "button";
+      const name = document.createElement("strong");
+      name.textContent = mod.name;
+      const summary = document.createElement("span");
+      summary.textContent = mod.description || (mod.mod_type === "map" ? "推荐地图" : "推荐工具");
+      item.append(name, summary);
+      item.addEventListener("click", () => openFeaturedMod(mod));
+      list.append(item);
+    });
+    $("featured-section").hidden = mods.length === 0;
+  } catch (_) {
+    $("featured-section").hidden = true;
+  }
 }
 
 function shortKey(levelKey) {
@@ -231,27 +268,9 @@ async function loadPopular() {
 }
 
 function renderMods() {
-  const query = $("mod-search").value.trim().toLocaleLowerCase();
-  const matches = state.mods.filter((mod) =>
-    [mod.name, mod.author, mod.description, mod.mod_type === "map" ? "地图" : "工具"]
-      .join(" ").toLocaleLowerCase().includes(query)
-  );
-  const collator = new Intl.Collator("zh-CN", { numeric: true, sensitivity: "base" });
-  const sort = state.modSort.key;
-  const direction = state.modSort.direction === "asc" ? 1 : -1;
-  matches.sort((left, right) => {
-    let compared = 0;
-    if (sort === "key") compared = collator.compare(catalogueKey(left), catalogueKey(right));
-    else if (sort === "name") compared = collator.compare(left.name || "", right.name || "");
-    else if (sort === "author") compared = collator.compare(left.author || "", right.author || "");
-    else if (sort === "version") compared = collator.compare(left.version || "", right.version || "");
-    else if (sort === "type") compared = collator.compare(left.mod_type || "", right.mod_type || "");
-    else compared = String(left.updated_at || "").localeCompare(String(right.updated_at || ""));
-    return compared === 0 ? collator.compare(left.name || "", right.name || "") : compared * direction;
-  });
   const list = $("mod-list");
   list.replaceChildren();
-  matches.forEach((mod) => {
+  state.mods.forEach((mod) => {
     const row = document.createElement("tr");
     row.append(
       cell(catalogueKey(mod), "key-cell"),
@@ -279,14 +298,69 @@ function renderMods() {
       instructions: mod.download_instructions || "请在作者页面查看下载与安装说明。",
       url: mod.download_url,
       linkLabel: mod.download_label || "项目页面",
-      modifyTarget: mod.mod_type === "map" ? mod : null,
+      modifyTarget: mod,
     });
     makeExpandable(row, details);
     list.append(row, details);
   });
-  const maps = matches.filter((mod) => mod.mod_type === "map").length;
-  const tools = matches.length - maps;
-  setStatus($("mod-status"), matches.length ? `${matches.length} 个模组 · ${maps} 个地图 · ${tools} 个工具` : (query ? "没有匹配的模组。" : "目录中还没有模组。"));
+  const query = $("mod-search").value.trim();
+  setStatus(
+    $("mod-status"),
+    state.modTotal
+      ? `${state.modTotal} 个模组 · ${state.modMaps} 个地图 · ${state.modTools} 个工具 · 第 ${state.modPage}/${state.modPageCount} 页`
+      : (query ? "没有匹配的模组。" : "目录中还没有模组。"),
+  );
+  renderModPagination(state.modTotal, state.modPageCount);
+}
+
+function paginationPages(current, total) {
+  if (total <= 7) return Array.from({ length: total }, (_, index) => index + 1);
+  const pages = new Set([1, total, current - 1, current, current + 1]);
+  const ordered = [...pages].filter((page) => page >= 1 && page <= total).sort((a, b) => a - b);
+  const result = [];
+  ordered.forEach((page, index) => {
+    if (index && page - ordered[index - 1] > 1) result.push(null);
+    result.push(page);
+  });
+  return result;
+}
+
+async function goToModPage(page) {
+  if (page === state.modPage) return;
+  state.modPage = page;
+  await loadMods();
+  $("mods-title").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function renderModPagination(total, pageCount) {
+  const navigation = $("mod-pagination");
+  navigation.hidden = total <= MODS_PER_PAGE;
+  navigation.replaceChildren();
+  if (navigation.hidden) return;
+
+  const button = (label, page, options = {}) => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = `page-button${options.current ? " is-current" : ""}`;
+    item.textContent = label;
+    item.disabled = Boolean(options.disabled);
+    if (options.current) item.setAttribute("aria-current", "page");
+    item.addEventListener("click", () => goToModPage(page));
+    return item;
+  };
+
+  navigation.append(button("上一页", state.modPage - 1, { disabled: state.modPage === 1 }));
+  paginationPages(state.modPage, pageCount).forEach((page) => {
+    if (page === null) {
+      const gap = document.createElement("span");
+      gap.className = "page-gap";
+      gap.textContent = "…";
+      navigation.append(gap);
+    } else {
+      navigation.append(button(String(page), page, { current: page === state.modPage }));
+    }
+  });
+  navigation.append(button("下一页", state.modPage + 1, { disabled: state.modPage === pageCount }));
 }
 
 function updateSortHeaders() {
@@ -311,8 +385,9 @@ function changeModSort(key) {
     state.modSort.key = key;
     state.modSort.direction = key === "updated" ? "desc" : "asc";
   }
+  state.modPage = 1;
   updateSortHeaders();
-  renderMods();
+  loadMods();
 }
 
 function updateSubmissionIdentityFields() {
@@ -342,7 +417,7 @@ function beginModification(mod) {
   $("submit-name").value = mod.name || "";
   $("submit-author").value = mod.author || "";
   $("submit-version").value = mod.version || "";
-  $("submit-mod-type").value = "map";
+  $("submit-mod-type").value = mod.mod_type || "tool";
   $("submit-level-key").value = mod.level_key || "";
   $("submit-level-set-uid").value = mod.level_set_uid || "";
   $("submit-scene-name").value = mod.scene_name || "";
@@ -351,7 +426,7 @@ function beginModification(mod) {
   $("submit-download-url").value = mod.download_url || "";
   $("submit-download-instructions").value = mod.download_instructions || "";
   $("submit-title").textContent = `申请修改：${mod.name}`;
-  $("submit-caption").textContent = "关卡身份已锁定；修改内容提交后需要管理员审核。";
+  $("submit-caption").textContent = "模组类型与身份已锁定；修改内容提交后需要管理员审核。";
   $("submission-submit").textContent = "提交修改申请";
   $("submission-cancel").hidden = false;
   setStatus($("submission-status"), "");
@@ -404,17 +479,38 @@ async function submitCatalogueEntry(event) {
 }
 
 async function loadMods() {
+  const requestId = ++state.modRequestId;
+  const parameters = new URLSearchParams({
+    page: String(state.modPage),
+    query: $("mod-search").value.trim(),
+    sort: state.modSort.key,
+    direction: state.modSort.direction,
+  });
+  setStatus($("mod-status"), "正在加载……");
   try {
-    state.mods = await api("/api/v1/mods");
+    const result = await api(`/api/v1/catalogue?${parameters}`);
+    if (requestId !== state.modRequestId) return;
+    state.mods = result.entries || [];
+    state.modTotal = Number(result.total || 0);
+    state.modMaps = Number(result.maps || 0);
+    state.modTools = Number(result.tools || 0);
+    state.modPage = Number(result.page || 1);
+    state.modPageCount = Number(result.page_count || 1);
     renderMods();
   } catch (error) {
+    if (requestId !== state.modRequestId) return;
     setStatus($("mod-status"), `目录加载失败：${error.message}`, true);
   }
 }
 
 document.querySelectorAll(".nav-item").forEach((item) => item.addEventListener("click", () => showView(item.dataset.view)));
 $("popular-refresh").addEventListener("click", loadPopular);
-$("mod-search").addEventListener("input", renderMods);
+let modSearchTimer = 0;
+$("mod-search").addEventListener("input", () => {
+  state.modPage = 1;
+  window.clearTimeout(modSearchTimer);
+  modSearchTimer = window.setTimeout(loadMods, 220);
+});
 document.querySelectorAll(".mod-table .sort-button").forEach((button) => {
   button.addEventListener("click", () => changeModSort(button.dataset.sort));
 });
@@ -437,4 +533,5 @@ const initialView = location.hash === "#mods"
   ? "mods"
   : (location.hash === "#submit" ? "submit" : "popular");
 showView(initialView);
+loadFeaturedMods();
 loadMods();

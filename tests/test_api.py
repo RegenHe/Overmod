@@ -5,6 +5,7 @@ import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from urllib.request import Request as UrlRequest
 from starlette.requests import Request
 
 
@@ -19,6 +20,7 @@ from fastapi import HTTPException, Response
 from pydantic import ValidationError
 
 from overmod_server.app import (
+    _load_popular_custom_levels,
     _popular_cache,
     admin_submissions,
     approve_submission,
@@ -26,15 +28,17 @@ from overmod_server.app import (
     create_submission,
     create_mod,
     delete_mod,
+    featured_mods,
     popular_levels,
+    public_catalogue,
     public_mods,
     require_admin,
     reject_submission,
     update_mod,
 )
-from overmod_server.database import initialise
+from overmod_server.database import connect, initialise
 from overmod_server.schemas import ModWrite, SubmissionWrite, oc2diy_level_key
-from import_overrank_levels import import_levels
+from import_overrank_levels import IMPORTED_DESCRIPTION, import_levels
 
 
 class OvermodApiTests(unittest.TestCase):
@@ -44,6 +48,8 @@ class OvermodApiTests(unittest.TestCase):
             if path.exists():
                 path.unlink()
         initialise()
+        with connect() as connection:
+            connection.execute("DELETE FROM mods")
         _popular_cache["payload"] = None
         _popular_cache["expires_at"] = 0.0
 
@@ -100,6 +106,17 @@ class OvermodApiTests(unittest.TestCase):
         delete_mod(created["id"])
         self.assertEqual(admin_mods(), [])
 
+    def test_recommended_mods_are_seeded(self):
+        for suffix in ("", "-shm", "-wal"):
+            path = Path(str(TEST_DATABASE) + suffix)
+            if path.exists():
+                path.unlink()
+        initialise()
+        recommended = featured_mods(Response())
+        self.assertEqual({mod["name"] for mod in recommended}, {"Overrank", "Overwashed"})
+        self.assertTrue(all(mod["featured"] for mod in recommended))
+        self.assertTrue(all(mod["description"] == "" for mod in recommended))
+
     def test_uid_and_scene_name_must_match_supplied_key(self):
         with self.assertRaises(ValidationError):
             ModWrite(
@@ -111,6 +128,38 @@ class OvermodApiTests(unittest.TestCase):
                 description="Map description",
                 download_url="https://example.com/map",
             )
+
+    def test_catalogue_is_paginated_and_searchable(self):
+        for index in range(45):
+            create_mod(
+                ModWrite(
+                    name=f"Mod {index:03d}",
+                    author="Catalogue Author",
+                    mod_type="tool",
+                    description="Pagination test",
+                    download_url=f"https://example.com/mod-{index}",
+                    enabled=True,
+                )
+            )
+
+        first = public_catalogue(
+            Response(), page=1, query="", sort="name", direction="asc"
+        )
+        second = public_catalogue(
+            Response(), page=2, query="", sort="name", direction="asc"
+        )
+        filtered = public_catalogue(
+            Response(), page=1, query="Mod 044", sort="name", direction="asc"
+        )
+
+        self.assertEqual(first["total"], 45)
+        self.assertEqual(first["page_count"], 2)
+        self.assertEqual(len(first["entries"]), 40)
+        self.assertEqual(first["entries"][0]["name"], "Mod 000")
+        self.assertEqual(len(second["entries"]), 5)
+        self.assertEqual(second["entries"][0]["name"], "Mod 040")
+        self.assertEqual(filtered["total"], 1)
+        self.assertEqual(filtered["entries"][0]["name"], "Mod 044")
 
     @staticmethod
     def request(ip: str = "198.51.100.10") -> Request:
@@ -209,15 +258,26 @@ class OvermodApiTests(unittest.TestCase):
             [
                 ("a", "oc2diy-map-one", "old_scene", "合集 / 旧名称", "2026-01-01"),
                 ("b", "oc2diy-map-one", "new_scene", "合集 / 新名称", "2026-02-01"),
+                ("a", "oc2diy-story", "s_oc1_story_1_2", "胡闹厨房 1 - 主线 / 1-2", "2026-02-02"),
                 ("a", "official-map", "official", "官方关卡", "2026-03-01"),
             ],
         )
         source.commit()
         source.close()
 
-        inserted, skipped = import_levels(source_path)
-        self.assertEqual((inserted, skipped), (1, 0))
-        imported = public_mods(Response())
+        create_mod(
+            ModWrite(
+                name="胡闹厨房 1 - 主线 / 1-2",
+                level_key="oc2diy-story",
+                mod_type="map",
+                description=IMPORTED_DESCRIPTION,
+            )
+        )
+        inserted, skipped, removed = import_levels(source_path)
+        self.assertEqual((inserted, skipped, removed), (1, 0, 1))
+        imported = [
+            mod for mod in public_mods(Response()) if mod["mod_type"] == "map"
+        ]
         self.assertEqual(len(imported), 1)
         self.assertEqual(imported[0]["name"], "合集 / 新名称")
         self.assertEqual(imported[0]["author"], "合集")
@@ -272,6 +332,37 @@ class OvermodApiTests(unittest.TestCase):
         self.assertEqual(approved["description"], "补充后的介绍")
         self.assertEqual(len(public_mods(Response())), 1)
 
+    def test_tool_change_request_updates_a_featured_entry(self):
+        original = create_mod(
+            ModWrite(name="Overrank", mod_type="tool", description="", featured=True)
+        )
+        submitted = create_submission(
+            SubmissionWrite(
+                target_mod_id=original["id"],
+                name="Overrank",
+                author="RegenHe",
+                mod_type="tool",
+                description="排行榜与房间工具",
+                download_url="https://example.com/overrank",
+            ),
+            self.request(),
+        )
+        approved = approve_submission(
+            submitted["id"],
+            ModWrite(
+                name=submitted["name"],
+                author=submitted["author"],
+                mod_type=submitted["mod_type"],
+                description=submitted["description"],
+                download_url=submitted["download_url"],
+                enabled=True,
+                featured=True,
+            ),
+        )
+        self.assertEqual(approved["id"], original["id"])
+        self.assertTrue(approved["featured"])
+        self.assertEqual(approved["author"], "RegenHe")
+
     def test_rejects_non_http_download_urls(self):
         with self.assertRaises(ValidationError):
             ModWrite(
@@ -291,6 +382,23 @@ class OvermodApiTests(unittest.TestCase):
         self.assertEqual(first, payload)
         self.assertEqual(second, payload)
         self.assertEqual(loader.call_count, 1)
+
+    def test_popular_levels_use_an_http_request(self):
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self):
+                return b'{"days":7,"entries":[]}'
+
+        with patch("overmod_server.app.urlopen", return_value=FakeResponse()) as opener:
+            payload = _load_popular_custom_levels()
+
+        self.assertEqual(payload, {"days": 7, "entries": []})
+        self.assertIsInstance(opener.call_args.args[0], UrlRequest)
 
 
 if __name__ == "__main__":

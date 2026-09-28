@@ -28,7 +28,7 @@ class ModFields(BaseModel):
     level_set_uid: str = Field(default="", max_length=160)
     scene_name: str = Field(default="", max_length=160)
     mod_type: Literal["map", "tool"] = "tool"
-    description: str = Field(min_length=1, max_length=1600)
+    description: str = Field(default="", max_length=1600)
     download_label: str = Field(default="项目页面", max_length=48)
     download_url: str = Field(default="", max_length=500)
     download_instructions: str = Field(default="", max_length=800)
@@ -80,6 +80,7 @@ class ModFields(BaseModel):
 
 class ModWrite(ModFields):
     enabled: bool = True
+    featured: bool = False
 
 
 class SubmissionWrite(ModFields):
@@ -87,6 +88,8 @@ class SubmissionWrite(ModFields):
 
     @model_validator(mode="after")
     def require_download_url(self):
+        if not self.description:
+            raise ValueError("A submission needs a description")
         if not self.download_url:
             raise ValueError("A submission needs a download or project URL")
         return self
