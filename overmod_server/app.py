@@ -145,12 +145,16 @@ def public_catalogue(
         pattern="^(key|name|type|author|version|updated)$",
     ),
     direction: str = Query(default="desc", pattern="^(asc|desc)$"),
+    mod_id: int | None = None,
 ) -> dict:
     page_size = 40
     where = "enabled = 1"
     parameters: list[object] = []
     cleaned_query = query.strip().lower()
-    if cleaned_query:
+    if mod_id is not None:
+        where += " AND id = ?"
+        parameters.append(mod_id)
+    elif cleaned_query:
         escaped_query = (
             cleaned_query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         )

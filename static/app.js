@@ -10,6 +10,7 @@ const state = {
   modMaps: 0,
   modTools: 0,
   modRequestId: 0,
+  modExactId: null,
   modificationTarget: null,
 };
 const MODS_PER_PAGE = 40;
@@ -48,6 +49,7 @@ function showView(name) {
 function openFeaturedMod(mod) {
   $("mod-search").value = mod.name;
   state.modPage = 1;
+  state.modExactId = mod.id;
   showView("mods");
   loadMods();
 }
@@ -486,6 +488,7 @@ async function loadMods() {
     sort: state.modSort.key,
     direction: state.modSort.direction,
   });
+  if (state.modExactId) parameters.set("mod_id", String(state.modExactId));
   setStatus($("mod-status"), "正在加载……");
   try {
     const result = await api(`/api/v1/catalogue?${parameters}`);
@@ -503,11 +506,20 @@ async function loadMods() {
   }
 }
 
-document.querySelectorAll(".nav-item").forEach((item) => item.addEventListener("click", () => showView(item.dataset.view)));
+document.querySelectorAll(".nav-item").forEach((item) => item.addEventListener("click", () => {
+  if (item.dataset.view === "mods") {
+    state.modExactId = null;
+    state.modPage = 1;
+    $("mod-search").value = "";
+    loadMods();
+  }
+  showView(item.dataset.view);
+}));
 $("popular-refresh").addEventListener("click", loadPopular);
 let modSearchTimer = 0;
 $("mod-search").addEventListener("input", () => {
   state.modPage = 1;
+  state.modExactId = null;
   window.clearTimeout(modSearchTimer);
   modSearchTimer = window.setTimeout(loadMods, 220);
 });

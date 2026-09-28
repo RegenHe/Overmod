@@ -4,7 +4,9 @@ const state = {
   token: sessionStorage.getItem("overmod-admin-token") || "",
   mods: [],
   submissions: [],
+  adminPage: 1,
 };
+const ADMIN_PAGE_SIZE = 40;
 const $ = (id) => document.getElementById(id);
 
 async function api(path, options = {}) {
@@ -104,8 +106,14 @@ function review(submission) {
 function renderMods() {
   const list = $("admin-list");
   list.replaceChildren();
-  $("admin-count").textContent = `${state.mods.length} 项`;
-  state.mods.forEach((mod) => {
+  const pageCount = Math.max(1, Math.ceil(state.mods.length / ADMIN_PAGE_SIZE));
+  state.adminPage = Math.min(Math.max(1, state.adminPage), pageCount);
+  const pageStart = (state.adminPage - 1) * ADMIN_PAGE_SIZE;
+  const pageMods = state.mods.slice(pageStart, pageStart + ADMIN_PAGE_SIZE);
+  $("admin-count").textContent = state.mods.length
+    ? `${state.mods.length} 项 · 第 ${state.adminPage}/${pageCount} 页`
+    : "0 项";
+  pageMods.forEach((mod) => {
     const row = document.createElement("article");
     row.className = `admin-row${mod.enabled ? "" : " is-hidden"}`;
     const details = document.createElement("div");
@@ -138,6 +146,54 @@ function renderMods() {
     row.append(details, actions);
     list.append(row);
   });
+  renderAdminPagination(pageCount);
+}
+
+function adminPaginationPages(current, total) {
+  if (total <= 7) return Array.from({ length: total }, (_, index) => index + 1);
+  const pages = new Set([1, total, current - 1, current, current + 1]);
+  const ordered = [...pages].filter((page) => page >= 1 && page <= total).sort((a, b) => a - b);
+  const result = [];
+  ordered.forEach((page, index) => {
+    if (index && page - ordered[index - 1] > 1) result.push(null);
+    result.push(page);
+  });
+  return result;
+}
+
+function renderAdminPagination(pageCount) {
+  const navigation = $("admin-pagination");
+  navigation.hidden = state.mods.length <= ADMIN_PAGE_SIZE;
+  navigation.replaceChildren();
+  if (navigation.hidden) return;
+
+  const button = (label, page, options = {}) => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = `page-button${options.current ? " is-current" : ""}`;
+    item.textContent = label;
+    item.disabled = Boolean(options.disabled);
+    if (options.current) item.setAttribute("aria-current", "page");
+    item.addEventListener("click", () => {
+      state.adminPage = page;
+      renderMods();
+      $("admin-count").scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+    return item;
+  };
+
+  navigation.append(button("上一页", state.adminPage - 1, { disabled: state.adminPage === 1 }));
+  adminPaginationPages(state.adminPage, pageCount).forEach((page) => {
+    if (page === null) {
+      const gap = document.createElement("span");
+      gap.className = "page-gap";
+      gap.textContent = "…";
+      navigation.append(gap);
+    } else {
+      navigation.append(button(String(page), page, { current: page === state.adminPage }));
+    }
+  });
+  navigation.append(button("下一页", state.adminPage + 1, { disabled: state.adminPage === pageCount }));
 }
 
 async function loadMods() {

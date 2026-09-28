@@ -130,8 +130,9 @@ class OvermodApiTests(unittest.TestCase):
             )
 
     def test_catalogue_is_paginated_and_searchable(self):
+        exact_id = 0
         for index in range(45):
-            create_mod(
+            created = create_mod(
                 ModWrite(
                     name=f"Mod {index:03d}",
                     author="Catalogue Author",
@@ -141,6 +142,8 @@ class OvermodApiTests(unittest.TestCase):
                     enabled=True,
                 )
             )
+            if index == 0:
+                exact_id = created["id"]
 
         first = public_catalogue(
             Response(), page=1, query="", sort="name", direction="asc"
@@ -151,6 +154,10 @@ class OvermodApiTests(unittest.TestCase):
         filtered = public_catalogue(
             Response(), page=1, query="Mod 044", sort="name", direction="asc"
         )
+        exact = public_catalogue(
+            Response(), page=1, query="Overrank", sort="name", direction="asc",
+            mod_id=exact_id,
+        )
 
         self.assertEqual(first["total"], 45)
         self.assertEqual(first["page_count"], 2)
@@ -160,6 +167,8 @@ class OvermodApiTests(unittest.TestCase):
         self.assertEqual(second["entries"][0]["name"], "Mod 040")
         self.assertEqual(filtered["total"], 1)
         self.assertEqual(filtered["entries"][0]["name"], "Mod 044")
+        self.assertEqual(exact["total"], 1)
+        self.assertEqual(exact["entries"][0]["id"], exact_id)
 
     @staticmethod
     def request(ip: str = "198.51.100.10") -> Request:
