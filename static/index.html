@@ -86,7 +86,7 @@
       <div class="page-heading">
         <div>
           <h1 id="submit-title">提交模组</h1>
-          <p>为防止广告等垃圾或有害内容，提交后需要管理员审核，不会立即出现在公开目录中</p>
+          <p id="submit-caption">为防止广告等垃圾或有害内容，提交后需要管理员审核，不会立即出现在公开目录中</p>
         </div>
       </div>
       <form id="submission-form" class="submission-form">
@@ -110,6 +110,7 @@
         <div class="submission-note">这里只提交文字和外部地址，不会上传文件。同一网络地址 24 小时最多提交 50 次。</div>
         <div class="form-actions">
           <button id="submission-submit" class="primary-button" type="submit">提交审核</button>
+          <button id="submission-cancel" class="subtle-button" type="button" hidden>取消修改</button>
           <span id="submission-status" class="form-status" aria-live="polite"></span>
         </div>
       </form>

@@ -123,6 +123,7 @@ def public_mods(response: Response) -> list[dict]:
 @app.post("/api/v1/submissions", response_model=SubmissionResponse)
 def create_submission(payload: SubmissionWrite, request: Request) -> dict:
     values = payload.model_dump()
+    target_mod_id = values.pop("target_mod_id")
     now = int(time.time())
     source_hash = _client_ip_hash(request)
     with connect() as connection:
@@ -141,7 +142,30 @@ def create_submission(payload: SubmissionWrite, request: Request) -> dict:
                 detail="同一网络地址 24 小时内最多提交 50 次，请稍后再试",
             )
 
-        if values["level_key"]:
+        if target_mod_id is not None:
+            target = connection.execute(
+                """
+                SELECT * FROM mods
+                WHERE id = ? AND enabled = 1 AND mod_type = 'map'
+                """,
+                (target_mod_id,),
+            ).fetchone()
+            if target is None:
+                raise HTTPException(status_code=404, detail="要修改的地图不存在或已隐藏")
+            pending_update = connection.execute(
+                """
+                SELECT 1 FROM submissions
+                WHERE status = 'pending' AND target_mod_id = ? LIMIT 1
+                """,
+                (target_mod_id,),
+            ).fetchone()
+            if pending_update:
+                raise HTTPException(status_code=409, detail="这张地图已有修改申请正在等待审核")
+            values["mod_type"] = "map"
+            values["level_key"] = target["level_key"]
+            values["level_set_uid"] = target["level_set_uid"]
+            values["scene_name"] = target["scene_name"]
+        elif values["level_key"]:
             published = connection.execute(
                 "SELECT 1 FROM mods WHERE level_key = ? LIMIT 1",
                 (values["level_key"],),
@@ -161,8 +185,8 @@ def create_submission(payload: SubmissionWrite, request: Request) -> dict:
                 name, author, version, level_key, level_set_uid,
                 scene_name, mod_type, description, download_label,
                 download_url, download_instructions, status,
-                submitter_ip_hash, submitted_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+                submitter_ip_hash, submitted_at, target_mod_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
             """,
             (
                 values["name"],
@@ -178,6 +202,7 @@ def create_submission(payload: SubmissionWrite, request: Request) -> dict:
                 values["download_instructions"],
                 source_hash,
                 now,
+                target_mod_id,
             ),
         )
         row = connection.execute(
@@ -237,33 +262,60 @@ def approve_submission(submission_id: int, payload: ModWrite) -> dict:
             ).fetchone()
             if submission is None:
                 raise HTTPException(status_code=404, detail="Pending submission not found")
-            cursor = connection.execute(
-                """
-                INSERT INTO mods (
-                    name, author, version, level_key, level_set_uid,
-                    scene_name, mod_type, description, download_label,
-                    download_url, download_instructions, enabled
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    values["name"], values["author"], values["version"],
-                    values["level_key"], values["level_set_uid"],
-                    values["scene_name"], values["mod_type"],
-                    values["description"], values["download_label"],
-                    values["download_url"], values["download_instructions"],
-                    1 if values["enabled"] else 0,
-                ),
-            )
+            target_mod_id = submission["target_mod_id"]
+            if target_mod_id is None:
+                cursor = connection.execute(
+                    """
+                    INSERT INTO mods (
+                        name, author, version, level_key, level_set_uid,
+                        scene_name, mod_type, description, download_label,
+                        download_url, download_instructions, enabled
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        values["name"], values["author"], values["version"],
+                        values["level_key"], values["level_set_uid"],
+                        values["scene_name"], values["mod_type"],
+                        values["description"], values["download_label"],
+                        values["download_url"], values["download_instructions"],
+                        1 if values["enabled"] else 0,
+                    ),
+                )
+                approved_mod_id = cursor.lastrowid
+            else:
+                cursor = connection.execute(
+                    """
+                    UPDATE mods SET
+                        name = ?, author = ?, version = ?, level_key = ?,
+                        level_set_uid = ?, scene_name = ?, mod_type = ?,
+                        description = ?, download_label = ?, download_url = ?,
+                        download_instructions = ?, enabled = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (
+                        values["name"], values["author"], values["version"],
+                        values["level_key"], values["level_set_uid"],
+                        values["scene_name"], values["mod_type"],
+                        values["description"], values["download_label"],
+                        values["download_url"], values["download_instructions"],
+                        1 if values["enabled"] else 0,
+                        int(target_mod_id),
+                    ),
+                )
+                if cursor.rowcount == 0:
+                    raise HTTPException(status_code=404, detail="Target mod not found")
+                approved_mod_id = int(target_mod_id)
             connection.execute(
                 """
                 UPDATE submissions
                 SET status = 'approved', reviewed_at = ?, approved_mod_id = ?
                 WHERE id = ?
                 """,
-                (now, cursor.lastrowid, submission_id),
+                (now, approved_mod_id, submission_id),
             )
             row = connection.execute(
-                "SELECT * FROM mods WHERE id = ?", (cursor.lastrowid,)
+                "SELECT * FROM mods WHERE id = ?", (approved_mod_id,)
             ).fetchone()
     except sqlite3.IntegrityError as error:
         raise HTTPException(status_code=409, detail="This level key is already linked") from error

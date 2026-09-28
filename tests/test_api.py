@@ -223,6 +223,55 @@ class OvermodApiTests(unittest.TestCase):
         self.assertEqual(imported[0]["author"], "合集")
         self.assertEqual(imported[0]["download_url"], "")
 
+    def test_map_change_request_updates_existing_entry_after_approval(self):
+        original = create_mod(
+            ModWrite(
+                name="合集 / 第一关",
+                author="作者",
+                level_set_uid="set-uid",
+                scene_name="scene-one",
+                mod_type="map",
+                description="原介绍",
+                download_url="https://example.com/original",
+            )
+        )
+        request_payload = SubmissionWrite(
+            target_mod_id=original["id"],
+            name="合集 / 第一关",
+            author="新作者说明",
+            level_key=original["level_key"],
+            mod_type="map",
+            description="补充后的介绍",
+            download_url="https://b23.tv/updated",
+        )
+        submitted = create_submission(request_payload, self.request())
+        self.assertEqual(submitted["target_mod_id"], original["id"])
+
+        with self.assertRaises(HTTPException) as duplicate:
+            create_submission(request_payload, self.request("198.51.100.12"))
+        self.assertEqual(duplicate.exception.status_code, 409)
+
+        approved = approve_submission(
+            submitted["id"],
+            ModWrite(
+                name=submitted["name"],
+                author=submitted["author"],
+                version=submitted["version"],
+                level_key=submitted["level_key"],
+                level_set_uid=submitted["level_set_uid"],
+                scene_name=submitted["scene_name"],
+                mod_type=submitted["mod_type"],
+                description=submitted["description"],
+                download_label=submitted["download_label"],
+                download_url=submitted["download_url"],
+                download_instructions=submitted["download_instructions"],
+                enabled=True,
+            ),
+        )
+        self.assertEqual(approved["id"], original["id"])
+        self.assertEqual(approved["description"], "补充后的介绍")
+        self.assertEqual(len(public_mods(Response())), 1)
+
     def test_rejects_non_http_download_urls(self):
         with self.assertRaises(ValidationError):
             ModWrite(

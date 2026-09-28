@@ -91,7 +91,7 @@ function review(submission) {
   $("mod-id").value = "";
   $("submission-id").value = submission.id;
   $("field-enabled").checked = true;
-  $("editor-heading").textContent = `审核：${submission.name}`;
+  $("editor-heading").textContent = `${submission.target_mod_id ? "审核修改" : "审核新增"}：${submission.name}`;
   $("edit-cancel").hidden = false;
   setStatus($("editor-status"), "可以先修改投稿内容，再保存并通过审核。");
   window.scrollTo({ top: 0, behavior: "smooth" });
@@ -164,7 +164,7 @@ function renderSubmissions() {
     const title = document.createElement("h3");
     title.textContent = submission.name;
     const meta = document.createElement("p");
-    meta.textContent = `${submission.mod_type === "map" ? "地图" : "工具"} · ${submission.author || "未填写作者"} · ${formatSubmittedAt(submission.submitted_at)}`;
+    meta.textContent = `${submission.target_mod_id ? "修改申请" : "新增投稿"} · ${submission.mod_type === "map" ? "地图" : "工具"} · ${submission.author || "未填写作者"} · ${formatSubmittedAt(submission.submitted_at)}`;
     details.append(title, meta);
     const actions = document.createElement("div");
     actions.className = "admin-actions";

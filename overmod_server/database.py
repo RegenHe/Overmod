@@ -65,7 +65,8 @@ def initialise() -> None:
                 submitter_ip_hash TEXT NOT NULL,
                 submitted_at INTEGER NOT NULL,
                 reviewed_at INTEGER NOT NULL DEFAULT 0,
-                approved_mod_id INTEGER
+                approved_mod_id INTEGER,
+                target_mod_id INTEGER
             );
 
             CREATE INDEX IF NOT EXISTS idx_submissions_review
@@ -98,10 +99,25 @@ def initialise() -> None:
             connection.execute(
                 "ALTER TABLE mods ADD COLUMN mod_type TEXT NOT NULL DEFAULT 'tool'"
             )
+        submission_columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(submissions)").fetchall()
+        }
+        if "target_mod_id" not in submission_columns:
+            connection.execute(
+                "ALTER TABLE submissions ADD COLUMN target_mod_id INTEGER"
+            )
         connection.execute(
             """
             CREATE UNIQUE INDEX IF NOT EXISTS idx_mods_level_key
                 ON mods(level_key) WHERE level_key <> ''
+            """
+        )
+        connection.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_submissions_pending_target
+                ON submissions(target_mod_id)
+                WHERE status = 'pending' AND target_mod_id IS NOT NULL
             """
         )
 
@@ -146,6 +162,11 @@ def row_to_submission(row: sqlite3.Row) -> dict:
         "approved_mod_id": (
             int(row["approved_mod_id"])
             if row["approved_mod_id"] is not None
+            else None
+        ),
+        "target_mod_id": (
+            int(row["target_mod_id"])
+            if row["target_mod_id"] is not None
             else None
         ),
     }

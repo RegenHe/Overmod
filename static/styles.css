@@ -92,10 +92,11 @@ a { color: inherit; }
 .detail-pair { min-width: 145px; }
 .detail-pair span { display: block; color: #87939c; font-size: 10px; }
 .detail-pair strong { display: block; margin-top: 2px; color: #42515c; font-size: 12px; font-weight: 500; word-break: break-all; }
-.detail-description { max-width: 850px; margin: 8px 150px 4px 0; color: #3f4d57; line-height: 1.55; white-space: pre-wrap; }
-.detail-instructions { max-width: 850px; margin: 5px 150px 0 0; color: #7b8790; font-size: 11px; line-height: 1.5; white-space: pre-wrap; }
-.detail-download { position: absolute; right: 16px; bottom: 16px; min-width: 110px; }
-.download-unavailable { position: absolute; right: 16px; bottom: 17px; color: #9aa3aa; font-size: 11px; }
+.detail-description { max-width: 850px; margin: 8px 245px 4px 0; color: #3f4d57; line-height: 1.55; white-space: pre-wrap; }
+.detail-instructions { max-width: 850px; margin: 5px 245px 0 0; color: #7b8790; font-size: 11px; line-height: 1.5; white-space: pre-wrap; }
+.detail-actions { position: absolute; right: 16px; bottom: 16px; display: flex; align-items: center; gap: 8px; }
+.download-unavailable { color: #9aa3aa; font-size: 11px; }
+.modify-button { white-space: nowrap; }
 
 .search-box { width: min(285px, 42vw); }
 .catalogue-tools { display: flex; align-items: end; gap: 9px; }
@@ -180,5 +181,5 @@ label small { display: block; margin-top: 5px; color: #8a959d; font-size: 10px; 
   .footer { flex-direction: column; }
   .row-details { padding-left: 16px; }
   .detail-description, .detail-instructions { margin-right: 0; }
-  .detail-download, .download-unavailable { position: static; display: inline-block; margin-top: 12px; }
+  .detail-actions { position: static; flex-wrap: wrap; margin-top: 12px; }
 }

@@ -4,6 +4,7 @@ const state = {
   mods: [],
   popularLoaded: false,
   modSort: { key: "updated", direction: "desc" },
+  modificationTarget: null,
 };
 const $ = (id) => document.getElementById(id);
 
@@ -129,21 +130,35 @@ function detailRow(columnCount, options) {
     instructions.textContent = options.instructions;
     panel.append(instructions);
   }
+  const actions = document.createElement("div");
+  actions.className = "detail-actions";
   if (options.url) {
     const link = document.createElement("a");
-    link.className = "download-link detail-download";
+    link.className = "download-link";
     link.href = options.url;
     link.target = "_blank";
     link.rel = "noopener noreferrer nofollow";
     link.textContent = options.linkLabel || "下载页面";
     link.addEventListener("click", (event) => event.stopPropagation());
-    panel.append(link);
+    actions.append(link);
   } else {
     const unavailable = document.createElement("span");
     unavailable.className = "download-unavailable";
     unavailable.textContent = "暂未收录下载方式";
-    panel.append(unavailable);
+    actions.append(unavailable);
   }
+  if (options.modifyTarget) {
+    const modify = document.createElement("button");
+    modify.className = "subtle-button modify-button";
+    modify.type = "button";
+    modify.textContent = "申请修改";
+    modify.addEventListener("click", (event) => {
+      event.stopPropagation();
+      beginModification(options.modifyTarget);
+    });
+    actions.append(modify);
+  }
+  panel.append(actions);
   holder.append(panel);
   row.append(holder);
   return row;
@@ -190,6 +205,7 @@ function popularRow(entry) {
     instructions: metadata.download_instructions || "",
     url: metadata.download_url || "",
     linkLabel: metadata.download_label || "下载页面",
+    modifyTarget: metadata.id && metadata.mod_type === "map" ? metadata : null,
   });
   makeExpandable(row, details);
   return [row, details];
@@ -263,6 +279,7 @@ function renderMods() {
       instructions: mod.download_instructions || "请在作者页面查看下载与安装说明。",
       url: mod.download_url,
       linkLabel: mod.download_label || "项目页面",
+      modifyTarget: mod.mod_type === "map" ? mod : null,
     });
     makeExpandable(row, details);
     list.append(row, details);
@@ -300,11 +317,47 @@ function changeModSort(key) {
 
 function updateSubmissionIdentityFields() {
   const isMap = $("submit-mod-type").value === "map";
+  const locked = Boolean(state.modificationTarget);
+  $("submit-mod-type").disabled = locked;
   document.querySelectorAll(".submit-map-identity").forEach((label) => {
     const input = label.querySelector("input");
-    input.disabled = !isMap;
-    label.classList.toggle("is-disabled", !isMap);
+    input.disabled = !isMap || locked;
+    label.classList.toggle("is-disabled", !isMap || locked);
   });
+}
+
+function resetSubmissionForm() {
+  state.modificationTarget = null;
+  $("submission-form").reset();
+  $("submit-download-label").value = "项目页面";
+  $("submit-title").textContent = "提交模组";
+  $("submit-caption").textContent = "为防止广告等垃圾或有害内容，提交后需要管理员审核，不会立即出现在公开目录中";
+  $("submission-submit").textContent = "提交审核";
+  $("submission-cancel").hidden = true;
+  updateSubmissionIdentityFields();
+}
+
+function beginModification(mod) {
+  state.modificationTarget = mod;
+  $("submit-name").value = mod.name || "";
+  $("submit-author").value = mod.author || "";
+  $("submit-version").value = mod.version || "";
+  $("submit-mod-type").value = "map";
+  $("submit-level-key").value = mod.level_key || "";
+  $("submit-level-set-uid").value = mod.level_set_uid || "";
+  $("submit-scene-name").value = mod.scene_name || "";
+  $("submit-description").value = mod.description || "";
+  $("submit-download-label").value = mod.download_label || "项目页面";
+  $("submit-download-url").value = mod.download_url || "";
+  $("submit-download-instructions").value = mod.download_instructions || "";
+  $("submit-title").textContent = `申请修改：${mod.name}`;
+  $("submit-caption").textContent = "关卡身份已锁定；修改内容提交后需要管理员审核。";
+  $("submission-submit").textContent = "提交修改申请";
+  $("submission-cancel").hidden = false;
+  setStatus($("submission-status"), "");
+  updateSubmissionIdentityFields();
+  showView("submit");
+  window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
 function submissionPayload() {
@@ -321,6 +374,7 @@ function submissionPayload() {
     download_label: $("submit-download-label").value || "项目页面",
     download_url: $("submit-download-url").value,
     download_instructions: $("submit-download-instructions").value,
+    target_mod_id: state.modificationTarget ? state.modificationTarget.id : null,
   };
 }
 
@@ -330,14 +384,18 @@ async function submitCatalogueEntry(event) {
   button.disabled = true;
   setStatus($("submission-status"), "正在提交……");
   try {
+    const wasModification = Boolean(state.modificationTarget);
     await api("/api/v1/submissions", {
       method: "POST",
       body: JSON.stringify(submissionPayload()),
     });
-    $("submission-form").reset();
-    $("submit-download-label").value = "项目页面";
-    updateSubmissionIdentityFields();
-    setStatus($("submission-status"), "已提交，审核通过后会出现在模组目录中。");
+    resetSubmissionForm();
+    setStatus(
+      $("submission-status"),
+      wasModification
+        ? "修改申请已提交，审核通过后会更新原条目。"
+        : "已提交，审核通过后会出现在模组目录中。",
+    );
   } catch (error) {
     setStatus($("submission-status"), `提交失败：${error.message}`, true);
   } finally {
@@ -370,6 +428,10 @@ $("submit-mod-type").addEventListener("change", updateSubmissionIdentityFields);
   });
 });
 $("submission-form").addEventListener("submit", submitCatalogueEntry);
+$("submission-cancel").addEventListener("click", () => {
+  resetSubmissionForm();
+  setStatus($("submission-status"), "");
+});
 updateSubmissionIdentityFields();
 const initialView = location.hash === "#mods"
   ? "mods"

@@ -83,6 +83,8 @@ class ModWrite(ModFields):
 
 
 class SubmissionWrite(ModFields):
+    target_mod_id: int | None = Field(default=None, ge=1)
+
     @model_validator(mode="after")
     def require_download_url(self):
         if not self.download_url:
