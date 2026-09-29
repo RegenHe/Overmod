@@ -16,6 +16,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Res
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import __version__
 from .config import (
     ROOT,
     admin_token_hash,
@@ -56,7 +57,7 @@ def _known_overrank_level_keys(level_keys: list[str]) -> set[str]:
     request = UrlRequest(
         overrank_url() + "/api/v1/levels/known",
         data=body,
-        headers={"Content-Type": "application/json", "User-Agent": "Overmod/0.1.0"},
+        headers={"Content-Type": "application/json", "User-Agent": "Overmod/" + __version__},
         method="POST",
     )
     key = overrank_api_key()
@@ -138,7 +139,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Overmod",
-    version="0.1.0",
+    version=__version__,
     docs_url=None,
     redoc_url=None,
     lifespan=lifespan,
@@ -676,7 +677,7 @@ def _load_popular_custom_levels() -> dict:
     )
     request = UrlRequest(
         overrank_url() + "/api/v1/statistics/popular-levels?" + query,
-        headers={"User-Agent": "Overmod/0.1.0"},
+        headers={"User-Agent": "Overmod/" + __version__},
     )
     key = overrank_api_key()
     if key:
