@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import hmac
 import ipaddress
@@ -5,7 +6,7 @@ import json
 import sqlite3
 import threading
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -34,8 +35,11 @@ from .schemas import (
 STATIC = ROOT / "static"
 _popular_lock = threading.Lock()
 _popular_cache: dict = {"expires_at": 0.0, "payload": None}
+_verification_lock = threading.Lock()
 SUBMISSION_DAILY_LIMIT = 50
 SUBMISSION_WINDOW_SECONDS = 24 * 60 * 60
+VERIFICATION_INTERVAL_SECONDS = 24 * 60 * 60
+VERIFICATION_BATCH_SIZE = 500
 
 
 def _invalidate_popular_cache() -> None:
@@ -44,10 +48,92 @@ def _invalidate_popular_cache() -> None:
         _popular_cache["payload"] = None
 
 
+def _known_overrank_level_keys(level_keys: list[str]) -> set[str]:
+    unique_keys = list(dict.fromkeys(key for key in level_keys if key))
+    if not unique_keys:
+        return set()
+    body = json.dumps({"level_keys": unique_keys}, separators=(",", ":")).encode("utf-8")
+    request = UrlRequest(
+        overrank_url() + "/api/v1/levels/known",
+        data=body,
+        headers={"Content-Type": "application/json", "User-Agent": "Overmod/0.1.0"},
+        method="POST",
+    )
+    key = overrank_api_key()
+    if key:
+        request.add_header("X-Overrank-Key", key)
+    with urlopen(request, timeout=4.0) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    returned = payload.get("level_keys", [])
+    if not isinstance(returned, list):
+        raise ValueError("Overrank returned an invalid known-level response")
+    requested = set(unique_keys)
+    return {str(level_key) for level_key in returned if str(level_key) in requested}
+
+
+def _verification_state(level_key: str) -> tuple[int, int]:
+    if not level_key:
+        return 0, 0
+    try:
+        known = _known_overrank_level_keys([level_key])
+    except (HTTPError, URLError, TimeoutError, ValueError, json.JSONDecodeError):
+        return 0, 0
+    return (1, int(time.time())) if level_key in known else (0, 0)
+
+
+def verify_unverified_maps() -> dict[str, int]:
+    if not _verification_lock.acquire(blocking=False):
+        return {"pending": 0, "verified": 0}
+    try:
+        with connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, level_key FROM mods
+                WHERE mod_type = 'map' AND level_key <> '' AND overrank_verified = 0
+                ORDER BY id ASC
+                """
+            ).fetchall()
+        pending = [(int(row["id"]), str(row["level_key"])) for row in rows]
+        verified_ids: list[int] = []
+        for start in range(0, len(pending), VERIFICATION_BATCH_SIZE):
+            batch = pending[start:start + VERIFICATION_BATCH_SIZE]
+            try:
+                known = _known_overrank_level_keys([level_key for _, level_key in batch])
+            except (HTTPError, URLError, TimeoutError, ValueError, json.JSONDecodeError):
+                continue
+            verified_ids.extend(mod_id for mod_id, level_key in batch if level_key in known)
+        if verified_ids:
+            placeholders = ",".join("?" for _ in verified_ids)
+            with connect() as connection:
+                connection.execute(
+                    f"""
+                    UPDATE mods
+                    SET overrank_verified = 1, overrank_verified_at = ?
+                    WHERE id IN ({placeholders}) AND overrank_verified = 0
+                    """,
+                    [int(time.time()), *verified_ids],
+                )
+        return {"pending": len(pending), "verified": len(verified_ids)}
+    finally:
+        _verification_lock.release()
+
+
+async def _verification_worker() -> None:
+    while True:
+        await asyncio.to_thread(verify_unverified_maps)
+        await asyncio.sleep(VERIFICATION_INTERVAL_SECONDS)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     initialise()
-    yield
+    verification_task = asyncio.create_task(_verification_worker())
+    try:
+        yield
+    finally:
+        verification_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await verification_task
 
 
 app = FastAPI(
@@ -270,14 +356,20 @@ def create_submission(payload: SubmissionWrite, request: Request) -> dict:
             ).fetchone()
             if published or pending:
                 raise HTTPException(status_code=409, detail="这张地图已经收录或正在等待审核")
+        verified, verified_at = (
+            _verification_state(values["level_key"])
+            if values["mod_type"] == "map"
+            else (0, 0)
+        )
         cursor = connection.execute(
             """
             INSERT INTO submissions (
                 name, author, version, level_key, level_set_uid,
                 scene_name, mod_type, description, download_label,
                 download_url, download_instructions, status,
-                submitter_ip_hash, submitted_at, target_mod_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+                submitter_ip_hash, submitted_at, target_mod_id,
+                overrank_verified, overrank_verified_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)
             """,
             (
                 values["name"],
@@ -294,6 +386,8 @@ def create_submission(payload: SubmissionWrite, request: Request) -> dict:
                 source_hash,
                 now,
                 target_mod_id,
+                verified,
+                verified_at,
             ),
         )
         row = connection.execute(
@@ -354,14 +448,24 @@ def approve_submission(submission_id: int, payload: ModWrite) -> dict:
             if submission is None:
                 raise HTTPException(status_code=404, detail="Pending submission not found")
             target_mod_id = submission["target_mod_id"]
+            if values["mod_type"] == "map":
+                same_level = values["level_key"] == submission["level_key"]
+                if same_level and bool(submission["overrank_verified"]):
+                    verified = 1
+                    verified_at = int(submission["overrank_verified_at"])
+                else:
+                    verified, verified_at = _verification_state(values["level_key"])
+            else:
+                verified, verified_at = 0, 0
             if target_mod_id is None:
                 cursor = connection.execute(
                     """
                     INSERT INTO mods (
                         name, author, version, level_key, level_set_uid,
                         scene_name, mod_type, description, download_label,
-                        download_url, download_instructions, enabled, featured
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        download_url, download_instructions, enabled, featured,
+                        overrank_verified, overrank_verified_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         values["name"], values["author"], values["version"],
@@ -371,6 +475,8 @@ def approve_submission(submission_id: int, payload: ModWrite) -> dict:
                         values["download_url"], values["download_instructions"],
                         1 if values["enabled"] else 0,
                         1 if values["featured"] else 0,
+                        verified,
+                        verified_at,
                     ),
                 )
                 approved_mod_id = cursor.lastrowid
@@ -382,6 +488,7 @@ def approve_submission(submission_id: int, payload: ModWrite) -> dict:
                         level_set_uid = ?, scene_name = ?, mod_type = ?,
                         description = ?, download_label = ?, download_url = ?,
                         download_instructions = ?, enabled = ?, featured = ?,
+                        overrank_verified = ?, overrank_verified_at = ?,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE id = ?
                     """,
@@ -393,6 +500,8 @@ def approve_submission(submission_id: int, payload: ModWrite) -> dict:
                         values["download_url"], values["download_instructions"],
                         1 if values["enabled"] else 0,
                         1 if values["featured"] else 0,
+                        verified,
+                        verified_at,
                         int(target_mod_id),
                     ),
                 )
@@ -446,6 +555,11 @@ def reject_submission(submission_id: int) -> dict:
 )
 def create_mod(payload: ModWrite) -> dict:
     values = payload.model_dump()
+    verified, verified_at = (
+        _verification_state(values["level_key"])
+        if values["mod_type"] == "map"
+        else (0, 0)
+    )
     try:
         with connect() as connection:
             cursor = connection.execute(
@@ -454,8 +568,9 @@ def create_mod(payload: ModWrite) -> dict:
                     name, author, version, level_key, level_set_uid,
                     scene_name, mod_type,
                     description, download_label, download_url,
-                    download_instructions, enabled, featured
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    download_instructions, enabled, featured,
+                    overrank_verified, overrank_verified_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     values["name"],
@@ -471,6 +586,8 @@ def create_mod(payload: ModWrite) -> dict:
                     values["download_instructions"],
                     1 if values["enabled"] else 0,
                     1 if values["featured"] else 0,
+                    verified,
+                    verified_at,
                 ),
             )
             row = connection.execute(
@@ -489,6 +606,11 @@ def create_mod(payload: ModWrite) -> dict:
 )
 def update_mod(mod_id: int, payload: ModWrite) -> dict:
     values = payload.model_dump()
+    verified, verified_at = (
+        _verification_state(values["level_key"])
+        if values["mod_type"] == "map"
+        else (0, 0)
+    )
     try:
         with connect() as connection:
             cursor = connection.execute(
@@ -498,6 +620,7 @@ def update_mod(mod_id: int, payload: ModWrite) -> dict:
                     level_set_uid = ?, scene_name = ?, mod_type = ?,
                     description = ?, download_label = ?,
                     download_url = ?, download_instructions = ?, enabled = ?, featured = ?,
+                    overrank_verified = ?, overrank_verified_at = ?,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
@@ -515,6 +638,8 @@ def update_mod(mod_id: int, payload: ModWrite) -> dict:
                     values["download_instructions"],
                     1 if values["enabled"] else 0,
                     1 if values["featured"] else 0,
+                    verified,
+                    verified_at,
                     mod_id,
                 ),
             )

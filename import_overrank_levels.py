@@ -1,5 +1,6 @@
 import argparse
 import sqlite3
+import time
 from pathlib import Path
 
 from overmod_server.database import connect, initialise
@@ -84,6 +85,7 @@ def import_levels(overrank_database: Path) -> tuple[int, int, int]:
     inserted = 0
     skipped = 0
     removed = 0
+    verified_at = int(time.time())
     with connect() as destination:
         if excluded_keys:
             placeholders = ",".join("?" for _ in excluded_keys)
@@ -111,19 +113,29 @@ def import_levels(overrank_database: Path) -> tuple[int, int, int]:
                 INSERT OR IGNORE INTO mods (
                     name, author, version, level_key, level_set_uid,
                     scene_name, mod_type, description, download_label,
-                    download_url, download_instructions, enabled
-                ) VALUES (?, ?, '', ?, '', '', 'map', ?, '下载页面', '', '', 1)
+                    download_url, download_instructions, enabled,
+                    overrank_verified, overrank_verified_at
+                ) VALUES (?, ?, '', ?, '', '', 'map', ?, '下载页面', '', '', 1, 1, ?)
                 """,
                 (
                     name,
                     inferred_author(name),
                     level_key,
                     IMPORTED_DESCRIPTION,
+                    verified_at,
                 ),
             )
             if cursor.rowcount:
                 inserted += 1
             else:
+                destination.execute(
+                    """
+                    UPDATE mods
+                    SET overrank_verified = 1, overrank_verified_at = ?
+                    WHERE level_key = ? AND mod_type = 'map'
+                    """,
+                    (verified_at, level_key),
+                )
                 skipped += 1
     return inserted, skipped, removed
 

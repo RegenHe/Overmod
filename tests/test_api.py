@@ -35,6 +35,7 @@ from overmod_server.app import (
     require_admin,
     reject_submission,
     update_mod,
+    verify_unverified_maps,
 )
 from overmod_server.database import connect, initialise
 from overmod_server.schemas import ModWrite, SubmissionWrite, oc2diy_level_key
@@ -50,6 +51,12 @@ class OvermodApiTests(unittest.TestCase):
         initialise()
         with connect() as connection:
             connection.execute("DELETE FROM mods")
+        self.known_levels = patch(
+            "overmod_server.app._known_overrank_level_keys",
+            return_value=set(),
+        )
+        self.known_levels_mock = self.known_levels.start()
+        self.addCleanup(self.known_levels.stop)
         _popular_cache["payload"] = None
         _popular_cache["expires_at"] = 0.0
 
@@ -128,6 +135,43 @@ class OvermodApiTests(unittest.TestCase):
                 description="Map description",
                 download_url="https://example.com/map",
             )
+
+    def test_map_verification_uses_only_the_full_level_key(self):
+        level_key = oc2diy_level_key("verified-set", "verified-scene")
+        self.known_levels_mock.return_value = {level_key}
+        created = create_mod(
+            ModWrite(
+                name="人工填写的模组名",
+                author="人工填写的作者",
+                level_key=level_key,
+                mod_type="map",
+                description="介绍",
+            )
+        )
+        self.assertTrue(created["overrank_verified"])
+        self.assertEqual(created["name"], "人工填写的模组名")
+        self.assertEqual(created["author"], "人工填写的作者")
+
+        self.known_levels_mock.return_value = set()
+        modified = update_mod(
+            created["id"],
+            ModWrite(
+                name="修改后的模组名",
+                author="修改后的作者",
+                level_key=level_key,
+                mod_type="map",
+                description="新介绍",
+            ),
+        )
+        self.assertFalse(modified["overrank_verified"])
+
+        self.known_levels_mock.return_value = {level_key}
+        result = verify_unverified_maps()
+        refreshed = next(mod for mod in public_mods(Response()) if mod["id"] == created["id"])
+        self.assertEqual(result, {"pending": 1, "verified": 1})
+        self.assertTrue(refreshed["overrank_verified"])
+        self.assertEqual(refreshed["name"], "修改后的模组名")
+        self.assertEqual(refreshed["author"], "修改后的作者")
 
     def test_catalogue_is_paginated_and_searchable(self):
         exact_id = 0
@@ -291,6 +335,7 @@ class OvermodApiTests(unittest.TestCase):
         self.assertEqual(imported[0]["name"], "合集 / 新名称")
         self.assertEqual(imported[0]["author"], "合集")
         self.assertEqual(imported[0]["download_url"], "")
+        self.assertTrue(imported[0]["overrank_verified"])
 
     def test_map_change_request_updates_existing_entry_after_approval(self):
         original = create_mod(

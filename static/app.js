@@ -233,13 +233,15 @@ function popularRow(entry) {
   const version = cell(metadata.version || "—", "version-cell");
   const count = cell(String(entry.play_count || 0), "count-cell");
   row.append(rank, key, title, author, version, count);
-  const details = detailRow(6, {
-    facts: [
+  const facts = [
       ["完整关卡键", entry.level_key],
       ["内部名称", entry.level_name],
       ["最高分", `${entry.top_score || 0} · ${entry.top_score_player || "—"}`],
       ["最多菜", `${entry.top_dishes || 0} · ${entry.top_dishes_player || "—"}`],
-    ],
+  ];
+  if (metadata.id) facts.push(["Overrank 核对", metadata.overrank_verified ? "已核对" : "等待核对"]);
+  const details = detailRow(6, {
+    facts,
     description: metadata.description || "该关卡尚未在 Overmod 收录详细介绍。",
     instructions: metadata.download_instructions || "",
     url: metadata.download_url || "",
@@ -290,6 +292,7 @@ function renderMods() {
     if (mod.mod_type === "map") {
       facts.push(
         ["关联关卡", mod.level_key || "—"],
+        ["Overrank 核对", mod.overrank_verified ? "已核对" : "等待核对"],
         ["合集 UID", mod.level_set_uid || "—"],
         ["sceneName", mod.scene_name || "—"],
       );

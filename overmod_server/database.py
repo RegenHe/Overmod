@@ -47,6 +47,8 @@ def initialise() -> None:
                 download_instructions TEXT NOT NULL DEFAULT '',
                 enabled INTEGER NOT NULL DEFAULT 1,
                 featured INTEGER NOT NULL DEFAULT 0,
+                overrank_verified INTEGER NOT NULL DEFAULT 0,
+                overrank_verified_at INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
@@ -73,7 +75,9 @@ def initialise() -> None:
                 submitted_at INTEGER NOT NULL,
                 reviewed_at INTEGER NOT NULL DEFAULT 0,
                 approved_mod_id INTEGER,
-                target_mod_id INTEGER
+                target_mod_id INTEGER,
+                overrank_verified INTEGER NOT NULL DEFAULT 0,
+                overrank_verified_at INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE INDEX IF NOT EXISTS idx_submissions_review
@@ -111,6 +115,14 @@ def initialise() -> None:
             connection.execute(
                 "ALTER TABLE mods ADD COLUMN featured INTEGER NOT NULL DEFAULT 0"
             )
+        if "overrank_verified" not in columns:
+            connection.execute(
+                "ALTER TABLE mods ADD COLUMN overrank_verified INTEGER NOT NULL DEFAULT 0"
+            )
+        if "overrank_verified_at" not in columns:
+            connection.execute(
+                "ALTER TABLE mods ADD COLUMN overrank_verified_at INTEGER NOT NULL DEFAULT 0"
+            )
         submission_columns = {
             str(row["name"])
             for row in connection.execute("PRAGMA table_info(submissions)").fetchall()
@@ -118,6 +130,14 @@ def initialise() -> None:
         if "target_mod_id" not in submission_columns:
             connection.execute(
                 "ALTER TABLE submissions ADD COLUMN target_mod_id INTEGER"
+            )
+        if "overrank_verified" not in submission_columns:
+            connection.execute(
+                "ALTER TABLE submissions ADD COLUMN overrank_verified INTEGER NOT NULL DEFAULT 0"
+            )
+        if "overrank_verified_at" not in submission_columns:
+            connection.execute(
+                "ALTER TABLE submissions ADD COLUMN overrank_verified_at INTEGER NOT NULL DEFAULT 0"
             )
         connection.execute(
             """
@@ -193,6 +213,8 @@ def row_to_mod(row: sqlite3.Row) -> dict:
         "download_instructions": row["download_instructions"],
         "enabled": bool(row["enabled"]),
         "featured": bool(row["featured"]),
+        "overrank_verified": bool(row["overrank_verified"]),
+        "overrank_verified_at": int(row["overrank_verified_at"]),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
@@ -225,4 +247,6 @@ def row_to_submission(row: sqlite3.Row) -> dict:
             if row["target_mod_id"] is not None
             else None
         ),
+        "overrank_verified": bool(row["overrank_verified"]),
+        "overrank_verified_at": int(row["overrank_verified_at"]),
     }

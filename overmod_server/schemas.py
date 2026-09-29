@@ -97,6 +97,8 @@ class SubmissionWrite(ModFields):
 
 class ModResponse(ModWrite):
     id: int
+    overrank_verified: bool = False
+    overrank_verified_at: int = 0
     created_at: str
     updated_at: str
 
@@ -107,3 +109,5 @@ class SubmissionResponse(SubmissionWrite):
     submitted_at: int
     reviewed_at: int
     approved_mod_id: int | None = None
+    overrank_verified: bool = False
+    overrank_verified_at: int = 0

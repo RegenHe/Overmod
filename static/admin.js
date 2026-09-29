@@ -120,7 +120,7 @@ function renderMods() {
     const title = document.createElement("h3");
     title.textContent = mod.name;
     const meta = document.createElement("p");
-    meta.textContent = `${mod.mod_type === "map" ? "地图" : "工具"} · ${mod.author || "未填写作者"} · ${mod.version || "未填写版本"} · ${mod.enabled ? "公开显示" : "已隐藏"}${mod.featured ? " · 推荐" : ""}${mod.level_key ? ` · ${mod.level_key}` : ""}`;
+    meta.textContent = `${mod.mod_type === "map" ? "地图" : "工具"} · ${mod.author || "未填写作者"} · ${mod.version || "未填写版本"} · ${mod.enabled ? "公开显示" : "已隐藏"}${mod.featured ? " · 推荐" : ""}${mod.mod_type === "map" ? ` · ${mod.overrank_verified ? "已核对" : "等待核对"}` : ""}${mod.level_key ? ` · ${mod.level_key}` : ""}`;
     details.append(title, meta);
     const actions = document.createElement("div");
     actions.className = "admin-actions";
@@ -224,7 +224,7 @@ function renderSubmissions() {
     const title = document.createElement("h3");
     title.textContent = submission.name;
     const meta = document.createElement("p");
-    meta.textContent = `${submission.target_mod_id ? "修改申请" : "新增投稿"} · ${submission.mod_type === "map" ? "地图" : "工具"} · ${submission.author || "未填写作者"} · ${formatSubmittedAt(submission.submitted_at)}`;
+    meta.textContent = `${submission.target_mod_id ? "修改申请" : "新增投稿"} · ${submission.mod_type === "map" ? "地图" : "工具"} · ${submission.author || "未填写作者"}${submission.mod_type === "map" ? ` · ${submission.overrank_verified ? "已核对" : "等待核对"}` : ""} · ${formatSubmittedAt(submission.submitted_at)}`;
     details.append(title, meta);
     const actions = document.createElement("div");
     actions.className = "admin-actions";
